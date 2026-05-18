@@ -20,7 +20,6 @@
 #include "vt_parser.h"
 #include "shell_host.h"
 #include "particle_system.h"
-#include "background_art.h"
 #include "boot_sequence.h"
 
 #include <ftxui/component/screen_interactive.hpp>
@@ -69,7 +68,6 @@ private:
     CellBuffer   buf_;
     VtParser     parser_;
     ParticleSystem      particles_;
-    BackgroundSlideshow slideshow_;
     std::unique_ptr<ShellHost> shell_;
 
     // State

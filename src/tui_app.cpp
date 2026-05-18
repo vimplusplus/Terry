@@ -16,7 +16,6 @@
 #endif
 
 #include "tui_app.h"
-#include "background_art.h"
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -99,9 +98,8 @@ static std::string str_truncate(const std::string& s, int max_len) {
 class TerryNode : public ftxui::Node {
 public:
     TerryNode(CellBuffer& buf, ParticleSystem& ps,
-              const BackgroundSlideshow* slideshow,
               int cursor_col, int cursor_row, bool cursor_vis)
-        : buf_(buf), ps_(ps), slideshow_(slideshow),
+        : buf_(buf), ps_(ps),
           cursor_col_(cursor_col), cursor_row_(cursor_row),
           cursor_vis_(cursor_vis) {}
 
@@ -116,29 +114,7 @@ public:
         int w  = box_.x_max - box_.x_min + 1;
         int h  = box_.y_max - box_.y_min + 1;
 
-        // ── Layer 0: background art ───────────────────────────────────────────
-        if (slideshow_ && slideshow_->active()) {
-            for (int row = 0; row < h; ++row) {
-                for (int col = 0; col < w; ++col) {
-                    float brightness = 0.0f;
-                    int   piece_idx  = -1;
-                    char  ch = slideshow_->char_at(col, row, brightness, &piece_idx);
-                    if (ch == ' ' || brightness <= 0.0f || piece_idx < 0) continue;
-
-                    const ArtPiece ap = background_art::piece(piece_idx);
-                    auto r = static_cast<uint8_t>(ap.bright_r * brightness);
-                    auto g = static_cast<uint8_t>(ap.bright_g * brightness);
-                    auto b = static_cast<uint8_t>(ap.bright_b * brightness);
-
-                    ftxui::Pixel& px = screen.PixelAt(ox + col, oy + row);
-                    px.character        = std::string(1, ch);
-                    px.foreground_color = ftxui::Color::RGB(r, g, b);
-                }
-            }
-        }
-
-
-        // ── Layer 1: PTY cell buffer ──────────────────────────────────────────
+        // ── PTY cell buffer ───────────────────────────────────────────────────
         for (int row = 0; row < std::min(buf_.Rows(), h); ++row) {
             for (int col = 0; col < std::min(buf_.Cols(), w); ++col) {
                 const Cell& cell = buf_.At(col, row);
@@ -178,9 +154,7 @@ public:
                 if (tx >= 0 && tx < w && ty >= 0 && ty < h) {
                     int bc = std::min(tx, buf_.Cols() - 1);
                     int br = std::min(ty, buf_.Rows() - 1);
-                    float dummy_b = 0.0f;
-                    bool art_here = slideshow_ && slideshow_->char_at(tx, ty, dummy_b) != ' ';
-                    if (buf_.At(bc, br).ch == U' ' && !art_here) {
+                    if (buf_.At(bc, br).ch == U' ') {
                         ftxui::Pixel& px = screen.PixelAt(ox + tx, oy + ty);
                         px.character = ".";
                         px.foreground_color = ftxui::Color::RGB(100, 90, 180);
@@ -192,9 +166,7 @@ public:
             if (col < 0 || col >= w || row < 0 || row >= h) continue;
             int bc = std::min(col, buf_.Cols() - 1);
             int br = std::min(row, buf_.Rows() - 1);
-            float dummy_b2 = 0.0f;
-            bool art_here2 = slideshow_ && slideshow_->char_at(col, row, dummy_b2) != ' ';
-            if (buf_.At(bc, br).ch == U' ' && !art_here2) {
+            if (buf_.At(bc, br).ch == U' ') {
                 const auto& def = particle_type_def(p.type);
                 ftxui::Pixel& px = screen.PixelAt(ox + col, oy + row);
                 px.character = p.glyph;
@@ -209,9 +181,8 @@ public:
     }
 
 private:
-    CellBuffer&                buf_;
-    ParticleSystem&            ps_;
-    const BackgroundSlideshow* slideshow_;
+    CellBuffer&     buf_;
+    ParticleSystem& ps_;
     int  cursor_col_, cursor_row_;
     bool cursor_vis_;
 };
@@ -225,7 +196,6 @@ TuiApp::TuiApp(Config cfg)
       parser_(buf_) {
     cwd_ = get_cwd();
     particles_.Init(term_cols_, term_rows_, 15);
-    slideshow_.set_terminal_size(term_cols_, term_rows_);
     last_tick_ = Clock::now();
     // Stagger initial event cooldowns so they don’t all fire at once
     static std::mt19937 erng{7777};
@@ -324,9 +294,7 @@ void TuiApp::UpdateLive(float delta) {
                 flash_message_ = cfg.label;
                 flash_timer_   = 1.5f;
                 // Activate effects
-                if (i == EVT_OCTARINE_STORM)    { particles_.target_count = particles_.base_count * 8; slideshow_.flash(0); }
-                if (i == EVT_NARRATIVIUM_SURGE)   slideshow_.flash(2);
-                if (i == EVT_LUGGAGE_RAMPAGE)     slideshow_.flash(1);
+                if (i == EVT_OCTARINE_STORM)    particles_.target_count = particles_.base_count * 8;
             }
         }
     }
@@ -341,7 +309,6 @@ void TuiApp::UpdateLive(float delta) {
 
 void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
     anim_time_ += delta;
-    slideshow_.tick(delta);
     particles_.Update(delta, term_cols_, term_rows_);
 
     if (state_ == AppState::Boot)      UpdateBoot(delta);
@@ -354,7 +321,7 @@ void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
 
 ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
     return std::make_shared<TerryNode>(
-        buf_, particles_, &slideshow_,
+        buf_, particles_,
         buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible());
 }
 
@@ -433,7 +400,6 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
         term_rows_ = inner_rows;
         buf_.Resize(term_cols_, term_rows_);
         particles_.Init(term_cols_, term_rows_, particles_.base_count);
-        slideshow_.set_terminal_size(term_cols_, term_rows_);
         if (shell_ && shell_->IsRunning())
             shell_->Resize(term_cols_, term_rows_);
     }
@@ -498,6 +464,25 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
 
 int TuiApp::Run() {
     shell_ = ShellHost::Create();
+
+#ifdef _WIN32
+    // Double the console window height so boot messages and art are fully visible
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
+        int curH  = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        int newH  = std::min(curH * 2, 80);  // cap at 80 rows
+        int newW  = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        // Expand buffer first (can't shrink window below buffer)
+        COORD buf = csbi.dwSize;
+        buf.Y = static_cast<SHORT>(std::max((int)buf.Y, newH));
+        SetConsoleScreenBufferSize(hOut, buf);
+        SMALL_RECT rect = { 0, 0,
+            static_cast<SHORT>(newW - 1),
+            static_cast<SHORT>(newH - 1) };
+        SetConsoleWindowInfo(hOut, TRUE, &rect);
+    }
+#endif
 
     auto screen = ftxui::ScreenInteractive::Fullscreen();
 
