@@ -253,7 +253,12 @@ void TuiApp::SpawnShootingStar() {
 
 void TuiApp::UpdateBoot(float delta) {
     const auto& script = boot_script();
+
+    // All lines shown — wait out the end-of-boot pause before going Live.
     if (boot_line_index_ >= script.size()) {
+        boot_line_timer_ -= delta;
+        if (boot_line_timer_ > 0.0f) return;
+
         state_ = AppState::Live;
         std::string sh = cfg_.shell_path.empty() ? default_shell() : cfg_.shell_path;
         shell_->OnOutput([this](const std::string& data) {
@@ -277,7 +282,8 @@ void TuiApp::UpdateBoot(float delta) {
         if (boot_line_index_ < script.size()) {
             boot_line_timer_ = script[boot_line_index_].delay_ms / 1000.0f;
         } else {
-            boot_line_timer_ = 1.0f;
+            // Linger 3 s after the last Death line so it can be read.
+            boot_line_timer_ = 3.0f;
         }
     }
 }
