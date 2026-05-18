@@ -8,8 +8,9 @@ namespace terry {
 // ── Luggage ──────────────────────────────────────────────────────────────────
 
 std::string luggage_frame(int direction) {
-    // The Luggage: [=]~ going right, ~[=] going left
-    return direction >= 0 ? "[=]~" : "~[=]";
+    // The Luggage: sapient pearwood chest, many legs, going somewhere important
+    // [▓] = chest body, ╾╾ / ╼╼ = scurrying legs
+    return direction >= 0 ? "[▓]╾╾" : "╼╼[▓]";
 }
 
 void update_luggage(LuggageState& s, float delta, int bar_width) {
@@ -53,8 +54,9 @@ void update_luggage(LuggageState& s, float delta, int bar_width) {
 // ── Rincewind ─────────────────────────────────────────────────────────────────
 
 const char* rincewind_sprite() {
-    // Rincewind running: hat, body, legs
-    return ">o>";  // ASCII approximation; runs right
+    // Rincewind running: pointy hat (∧), body (o), fleeing (≫)
+    // He is always running away from something. This is his natural state.
+    return "∧o≫";
 }
 
 void update_rincewind(RincewindState& s, float delta, int width) {
