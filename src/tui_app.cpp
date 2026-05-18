@@ -381,8 +381,11 @@ ftxui::Element TuiApp::RenderBoot(int /*cols*/, int /*rows*/) {
         "               |'-._   || |'|_.-'_.-'      ",
         "            jgs '-._'-.|| |' `_.-'          ",
         "                    '-.||_/.-'               ",
+        "                 /\\/\\/\\/\\/\\/\\/\\           ",
+        "                 | || || || || |            ",
+        "                  \\/ \\/ \\/ \\/             ",
     }) {
-        lines.push_back(text(art_line) | color(theme_.dim));
+        lines.push_back(text(art_line) | color(ftxui::Color::RGB(180, 120, 45)));
     }
     lines.push_back(text(""));
     for (size_t i = 0; i < boot_displayed_.size(); ++i) {
