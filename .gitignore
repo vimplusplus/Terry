@@ -1,0 +1,15 @@
+# OpenSpec workflow artifacts
+openspec/
+
+# Agent and Copilot customization files
+.github/prompts/
+.github/skills/
+.github/copilot-instructions.md
+**/*.prompt.md
+**/*.instructions.md
+**/*.agent.md
+**/SKILL.md
+**/AGENTS.md
+
+# Build output
+Octarine-CLI/build/
