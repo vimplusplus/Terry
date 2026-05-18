@@ -15,6 +15,19 @@ set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FTXUI_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
 
+# ── Skill content embedding (runs at configure time) ─────────────────────────
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/generated")
+execute_process(
+    COMMAND ${CMAKE_COMMAND}
+        "-DOUTPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/src/generated/skill_content.h"
+        "-DREFS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/references"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_skills.cmake"
+    RESULT_VARIABLE embed_result
+)
+if(NOT embed_result EQUAL 0)
+    message(WARNING "embed_skills.cmake failed (exit ${embed_result}) — skill content may be missing")
+endif()
+
 # ── Sources ───────────────────────────────────────────────────────────────────
 set(SOURCES
     src/main.cpp
@@ -27,6 +40,7 @@ set(SOURCES
     src/background_art.cpp
     src/tui_app.cpp
     src/vscode_launcher.cpp
+    src/skill_registry.cpp
 )
 
 if(WIN32)

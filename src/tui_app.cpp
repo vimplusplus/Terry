@@ -17,6 +17,7 @@
 
 #include "tui_app.h"
 #include "vscode_launcher.h"
+#include "skill_registry.h"
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -28,6 +29,8 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <thread>
@@ -436,6 +439,10 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
     ftxui::Element content;
     if (state_ == AppState::Boot) {
         content = RenderBoot(inner_cols, inner_rows);
+    } else if (state_ == AppState::LuggageBrowser) {
+        content = RenderLuggageBrowser(inner_cols, inner_rows);
+    } else if (state_ == AppState::LuggageInstall) {
+        content = RenderLuggageInstall(inner_cols, inner_rows);
     } else if (state_ == AppState::Rincewind) {
         content = RenderRincewind(inner_cols, inner_rows);
     } else if (farewell_showing_) {
@@ -487,6 +494,307 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
             text("\u255d") | color(bc),   // ╝
         }),
     });
+}
+
+// ── Luggage ───────────────────────────────────────────────────────────────────
+
+void TuiApp::ResetLuggageState() {
+    if (luggage_thread_.joinable()) luggage_thread_.detach();
+    {
+        std::lock_guard<std::mutex> lk(luggage_log_mutex_);
+        luggage_log_.clear();
+    }
+    luggage_selected_.clear();
+    luggage_input_buf_.clear();
+    luggage_install_path_.clear();
+    luggage_installing_ = false;
+    luggage_done_       = false;
+    state_ = AppState::Live;
+}
+
+ftxui::Element TuiApp::RenderLuggageBrowser(int cols, int rows) {
+    using namespace ftxui;
+    Color title_col  = Color::RGB(255, 200, 50);  // Luggage gold
+    Color check_col  = Color::RGB(100, 220, 100);
+    Color cursor_col = Color::RGB(255, 200, 50);
+    Color dim_col    = theme_.dim;
+
+    // Count selected
+    int sel_count = 0;
+    for (bool s : luggage_selected_) if (s) ++sel_count;
+
+    // Viewport: rows minus header (3) and footer (2)
+    int visible = std::max(1, rows - 5);
+
+    // Clamp scroll so cursor is always in viewport
+    if (luggage_cursor_ < luggage_scroll_)
+        luggage_scroll_ = luggage_cursor_;
+    if (luggage_cursor_ >= luggage_scroll_ + visible)
+        luggage_scroll_ = luggage_cursor_ - visible + 1;
+    luggage_scroll_ = std::max(0, std::min(luggage_scroll_, kSkillRegistrySize - visible));
+
+    // Header
+    std::string title_str = " THE LUGGAGE ";
+    int pad = std::max(0, (cols - 2 - static_cast<int>(title_str.size())) / 2);
+    std::string title_padded(static_cast<size_t>(pad), '=');
+    title_padded += title_str;
+
+    std::vector<Element> rows_elems;
+    rows_elems.push_back(
+        text(title_padded) | bold | color(title_col));
+    rows_elems.push_back(
+        text("  \u2191\u2193/jk navigate   SPACE select   ENTER confirm   ESC cancel")
+        | color(dim_col));
+    rows_elems.push_back(separator() | color(title_col));
+
+    // Skill rows
+    for (int i = luggage_scroll_; i < std::min(kSkillRegistrySize, luggage_scroll_ + visible); ++i) {
+        const SkillEntry& sk = kSkillRegistry[i];
+        bool selected  = luggage_selected_[i];
+        bool is_cursor = (i == luggage_cursor_);
+
+        std::string checkbox = selected ? "[x] " : "[ ] ";
+        std::string label_s  = sk.label;
+        // Pad label to 20 chars
+        while (static_cast<int>(label_s.size()) < 20) label_s += ' ';
+        std::string desc_s = sk.description;
+
+        Element chk_elem = text(checkbox) | color(selected ? check_col : dim_col);
+        Element lbl_elem = text(label_s)  | color(is_cursor ? cursor_col : theme_.text);
+        Element dsc_elem = text(desc_s)   | color(dim_col) | flex;
+        Element row_elem = hbox({ chk_elem, lbl_elem, text("  "), dsc_elem });
+
+        if (is_cursor) row_elem = row_elem | inverted;
+        rows_elems.push_back(std::move(row_elem));
+    }
+
+    // Filler to push footer to bottom
+    rows_elems.push_back(filler());
+
+    // Footer
+    rows_elems.push_back(separator() | color(title_col));
+    rows_elems.push_back(
+        text("  " + std::to_string(sel_count) + " skill(s) selected"
+             + (sel_count > 0 ? "  \u2014 press ENTER to install" : ""))
+        | color(sel_count > 0 ? check_col : dim_col));
+
+    return vbox(std::move(rows_elems))
+           | size(WIDTH, EQUAL, cols)
+           | size(HEIGHT, EQUAL, rows);
+}
+
+ftxui::Element TuiApp::RenderLuggageInstall(int cols, int rows) {
+    using namespace ftxui;
+    Color title_col = Color::RGB(255, 200, 50);
+    Color ok_col    = Color::RGB(100, 220, 100);
+    Color err_col   = Color::RGB(255, 80, 80);
+
+    std::string title_str = " THE LUGGAGE — INSTALL ";
+    int pad = std::max(0, (cols - 2 - static_cast<int>(title_str.size())) / 2);
+    std::string title_padded(static_cast<size_t>(pad), '=');
+    title_padded += title_str;
+
+    std::vector<Element> elems;
+    elems.push_back(text(title_padded) | bold | color(title_col));
+    elems.push_back(separator() | color(title_col));
+
+    if (!luggage_installing_) {
+        // Input phase
+        elems.push_back(text("") );
+        elems.push_back(text("  Where should the skills workspace be created?") | color(theme_.text));
+        elems.push_back(text(""));
+        elems.push_back(
+            hbox({
+                text("  Install to: ") | color(theme_.dim),
+                text(luggage_input_buf_) | color(theme_.highlight),
+                text("_") | color(title_col) | blink,
+            }));
+        elems.push_back(text(""));
+        elems.push_back(text("  Example: C:\\Users\\Rhys\\Documents\\my-workspace") | color(theme_.dim));
+        elems.push_back(text("  Press ENTER to install, ESC to go back.") | color(theme_.dim));
+    } else {
+        // Progress / done phase
+        std::vector<std::string> log_snap;
+        {
+            std::lock_guard<std::mutex> lk(luggage_log_mutex_);
+            log_snap = luggage_log_;
+        }
+        for (const auto& line : log_snap) {
+            Color c = theme_.text;
+            if (!line.empty()) {
+                if (line[0] == '+') c = ok_col;
+                if (line[0] == 'x' || line[0] == '!') c = err_col;
+            }
+            elems.push_back(text("  " + line) | color(c));
+        }
+    }
+
+    elems.push_back(filler());
+
+    return vbox(std::move(elems))
+           | size(WIDTH, EQUAL, cols)
+           | size(HEIGHT, EQUAL, rows);
+}
+
+void TuiApp::DoLuggageInstall() {
+    namespace fs = std::filesystem;
+
+    // Snapshot selection and path (UI thread may change state)
+    std::vector<int> selected;
+    for (int i = 0; i < (int)luggage_selected_.size(); ++i)
+        if (luggage_selected_[i]) selected.push_back(i);
+    const std::string install_path = luggage_install_path_;
+
+    auto post = [this](const std::string& line) {
+        std::lock_guard<std::mutex> lk(luggage_log_mutex_);
+        luggage_log_.push_back(line);
+    };
+
+    // Validate path
+    if (install_path.empty() ||
+        install_path.find("..") != std::string::npos ||
+        install_path.size() > 500) {
+        post("x Invalid install path.");
+        luggage_done_ = true;
+        return;
+    }
+
+    // Create root directory
+    std::error_code ec;
+    fs::create_directories(install_path, ec);
+    if (ec) {
+        post("x Could not create directory: " + ec.message());
+        luggage_done_ = true;
+        return;
+    }
+
+    post("+ Created " + install_path);
+
+    // Write each selected skill's SKILL.md
+    int written = 0;
+    std::vector<const SkillEntry*> installed_skills;
+
+    for (int idx : selected) {
+        if (idx < 0 || idx >= kSkillRegistrySize) continue;
+        const SkillEntry& sk = kSkillRegistry[idx];
+
+        std::string skill_dir = install_path + "/.github/skills/" + sk.id;
+        fs::create_directories(skill_dir, ec);
+        if (ec) {
+            post("! Could not create dir for " + std::string(sk.id));
+            continue;
+        }
+
+        std::ofstream skill_f(skill_dir + "/SKILL.md", std::ios::binary);
+        if (!skill_f) {
+            post("! Could not write " + std::string(sk.id) + "/SKILL.md");
+            continue;
+        }
+        skill_f << sk.content;
+        skill_f.close();
+        post("+ " + std::string(sk.label));
+        installed_skills.push_back(&sk);
+        ++written;
+    }
+
+    // Write copilot-instructions.md
+    {
+        std::ofstream ci(install_path + "/copilot-instructions.md");
+        if (ci) {
+            ci << "<!-- Generated by Terry Luggage Skill Browser -->\n"
+               << "<!-- Open this folder in VS Code to activate the installed skills. -->\n\n"
+               << "<skills>\n";
+            for (const SkillEntry* sk : installed_skills) {
+                ci << "<skill>\n"
+                   << "<name>" << sk->id << "</name>\n"
+                   << "<description>" << sk->description << "</description>\n"
+                   << "<file>.github/skills/" << sk->id << "/SKILL.md</file>\n"
+                   << "</skill>\n";
+            }
+            ci << "</skills>\n";
+        }
+    }
+
+    // Write skills-lock.json
+    {
+        // Get current UTC time as ISO 8601
+        std::time_t now = std::time(nullptr);
+        std::tm utc = {};
+#ifdef _WIN32
+        gmtime_s(&utc, &now);
+#else
+        gmtime_r(&now, &utc);
+#endif
+        char ts[32] = {};
+        std::strftime(ts, sizeof(ts) - 1, "%Y-%m-%dT%H:%M:%SZ", &utc);
+
+        std::ofstream lf(install_path + "/skills-lock.json");
+        if (lf) {
+            lf << "{\n  \"version\": 1,\n  \"generatedBy\": \"terry-luggage\",\n  \"skills\": {\n";
+            bool first = true;
+            for (const SkillEntry* sk : installed_skills) {
+                if (!first) lf << ",\n";
+                lf << "    \"" << sk->id << "\": {\n"
+                   << "      \"source\": \"" << sk->source_repo << "\",\n"
+                   << "      \"skillPath\": \"" << sk->skill_path << "\",\n"
+                   << "      \"installedAt\": \"" << ts << "\"\n"
+                   << "    }";
+                first = false;
+            }
+            lf << "\n  }\n}\n";
+        }
+    }
+
+    // Write SKILLS.md
+    {
+        std::ofstream sm(install_path + "/SKILLS.md");
+        if (sm) {
+            sm << "# Your AI Workspace\n\n"
+               << "Set up by Terry Luggage. Open this folder in VS Code with GitHub Copilot "
+               << "installed.\nEvery skill listed below is live immediately \xe2\x80\x94 no setup required.\n\n";
+
+            // Recommended skills
+            sm << "## Always active\n\n"
+               << "These are installed in every workspace. They activate automatically.\n\n"
+               << "| Skill | What it does | How to use |\n"
+               << "|-------|-------------|------------|\n";
+            for (const SkillEntry* sk : installed_skills) {
+                if (sk->recommended) {
+                    sm << "| " << sk->label << " | " << sk->description
+                       << " | Active automatically. |\n";
+                }
+            }
+
+            // Optional skills
+            bool has_optional = false;
+            for (const SkillEntry* sk : installed_skills)
+                if (!sk->recommended) { has_optional = true; break; }
+
+            if (has_optional) {
+                sm << "\n## Also installed\n\n"
+                   << "| Skill | What it does | How to use |\n"
+                   << "|-------|-------------|------------|\n";
+                for (const SkillEntry* sk : installed_skills) {
+                    if (!sk->recommended) {
+                        sm << "| " << sk->label << " | " << sk->description
+                           << " | Just ask your AI naturally. |\n";
+                    }
+                }
+            }
+
+            sm << "\n## Tips\n\n"
+               << "- Just talk to your AI. Skills activate based on what you ask for.\n"
+               << "- If responses feel too long, type `/caveman`.\n"
+               << "- To start a new project: `/opsx:propose <idea>`\n"
+               << "- To see what's installed: open `.github/skills/` in VS Code Explorer\n";
+        }
+    }
+
+    post("");
+    post("+ " + std::to_string(written) + " skill(s) installed to " + install_path);
+    post("  Open in VS Code with Copilot to activate. Type rincewind to open now.");
+    post("  Press any key to return to the shell.");
+    luggage_done_ = true;
 }
 
 // ── Rincewind ─────────────────────────────────────────────────────────────────
@@ -634,6 +942,17 @@ int TuiApp::Run() {
                 return true;
             }
             if (event == Event::Return) {
+                if (typed_line_ == "luggage") {
+                    typed_line_.clear();
+                    state_ = AppState::LuggageBrowser;
+                    luggage_selected_.assign(kSkillRegistrySize, false);
+                    // Pre-select recommended skills
+                    for (int i = 0; i < kSkillRegistrySize; ++i)
+                        luggage_selected_[i] = kSkillRegistry[i].recommended;
+                    luggage_cursor_ = 0;
+                    luggage_scroll_ = 0;
+                    return true;
+                }
                 if (typed_line_ == "rincewind") {
                     typed_line_.clear();
                     rincewind_cwd_ = get_cwd();
@@ -673,6 +992,68 @@ int TuiApp::Run() {
             if (rincewind_done_) {
                 ResetRincewindState();
                 return true;
+            }
+            return true;
+        }
+
+        if (state_ == AppState::LuggageBrowser) {
+            int list_size = kSkillRegistrySize;
+            if (event == Event::ArrowUp ||
+                (event.is_character() && event.character() == "k")) {
+                if (luggage_cursor_ > 0) --luggage_cursor_;
+            } else if (event == Event::ArrowDown ||
+                       (event.is_character() && event.character() == "j")) {
+                if (luggage_cursor_ < list_size - 1) ++luggage_cursor_;
+            } else if (event.is_character() && event.character() == " ") {
+                luggage_selected_[luggage_cursor_] = !luggage_selected_[luggage_cursor_];
+            } else if (event == Event::Return) {
+                bool any = false;
+                for (bool s : luggage_selected_) if (s) { any = true; break; }
+                if (any) {
+                    state_ = AppState::LuggageInstall;
+                    luggage_input_buf_.clear();
+                    luggage_install_path_.clear();
+                    luggage_installing_ = false;
+                    luggage_done_       = false;
+                    {
+                        std::lock_guard<std::mutex> lk(luggage_log_mutex_);
+                        luggage_log_.clear();
+                    }
+                }
+            } else if (event == Event::Escape) {
+                state_ = AppState::Live;
+                luggage_selected_.clear();
+            } else if (event.is_mouse()) {
+                auto& m = event.mouse();
+                if (m.button == ftxui::Mouse::WheelUp && luggage_scroll_ > 0)
+                    --luggage_scroll_;
+                if (m.button == ftxui::Mouse::WheelDown &&
+                    luggage_scroll_ < list_size - 1)
+                    ++luggage_scroll_;
+            }
+            return true;
+        }
+
+        if (state_ == AppState::LuggageInstall) {
+            if (!luggage_installing_) {
+                // Input phase
+                if (event.is_character()) {
+                    luggage_input_buf_ += event.character();
+                } else if (event == Event::Backspace) {
+                    if (!luggage_input_buf_.empty()) luggage_input_buf_.pop_back();
+                } else if (event == Event::Return) {
+                    if (!luggage_input_buf_.empty()) {
+                        luggage_install_path_ = luggage_input_buf_;
+                        luggage_installing_   = true;
+                        if (luggage_thread_.joinable()) luggage_thread_.detach();
+                        luggage_thread_ = std::thread([this] { DoLuggageInstall(); });
+                    }
+                } else if (event == Event::Escape) {
+                    state_ = AppState::LuggageBrowser;
+                }
+            } else if (luggage_done_) {
+                // Done phase — any key returns to shell
+                ResetLuggageState();
             }
             return true;
         }

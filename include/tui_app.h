@@ -57,7 +57,7 @@ struct ShootingStar {
     bool  active  = false;
 };
 
-enum class AppState { Boot, Live, Rincewind, Exit };
+enum class AppState { Boot, Live, LuggageBrowser, LuggageInstall, Rincewind, Exit };
 
 static constexpr int kEventCount = 3;
 enum EventId { EVT_OCTARINE_STORM = 0, EVT_NARRATIVIUM_SURGE = 1, EVT_LUGGAGE_RAMPAGE = 2 };
@@ -132,6 +132,20 @@ private:
     std::string              rincewind_cwd_;
     std::thread              rincewind_thread_;
 
+    // Luggage browser state
+    std::vector<bool> luggage_selected_;
+    int               luggage_cursor_ = 0;
+    int               luggage_scroll_ = 0;
+
+    // Luggage install state
+    std::string              luggage_install_path_;
+    std::string              luggage_input_buf_;
+    std::vector<std::string> luggage_log_;
+    std::mutex               luggage_log_mutex_;
+    bool                     luggage_installing_ = false;
+    bool                     luggage_done_       = false;
+    std::thread              luggage_thread_;
+
     // Internal methods
     void OnTick(float delta, ftxui::ScreenInteractive& screen);
     void UpdateBoot(float delta);
@@ -148,6 +162,11 @@ private:
 
     void StartRincewindWorker();
     void ResetRincewindState();
+
+    ftxui::Element RenderLuggageBrowser(int cols, int rows);
+    ftxui::Element RenderLuggageInstall(int cols, int rows);
+    void DoLuggageInstall();
+    void ResetLuggageState();
 };
 
 } // namespace terry
