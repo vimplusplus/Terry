@@ -328,32 +328,6 @@ ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
 ftxui::Element TuiApp::RenderBoot(int /*cols*/, int /*rows*/) {
     const auto& script = boot_script();
     std::vector<ftxui::Element> lines;
-    for (const char* art_line : {
-        "                            _.--.          ",
-        "                        _.-'_:-'||          ",
-        "                    _.-'_.-::::'||          ",
-        "               _.-:'_.-::::::'  ||          ",
-        "             .'`-.-:::::::'     ||          ",
-        "            /.'`;|:::::::'      ||_         ",
-        "           ||   ||::::::'     _.;._'-._     ",
-        "           ||   ||:::::'  _.-!oo @.!-._'-.  ",
-        "           \\'.  ||:::::.-!()oo @!()@.-'_.|  ",
-        "            '.'-;|:.-'.&$@.& ()$%-'o.'\\U||  ",
-        "              `>'-.!@%()@'@_%-'_.-o _.|'||  ",
-        "               ||-._'-.@.-'_.-' _.-o  |'||  ",
-        "               ||=[ '-._.-\\U/.-'    o |'||  ",
-        "               || '-.]=|| |'|      o  |'||  ",
-        "               ||      || |'|        _| '; ",
-        "               ||      || |'|    _.-'_.-'  ",
-        "               |'-._   || |'|_.-'_.-'      ",
-        "            jgs '-._'-.|| |' `_.-'          ",
-        "                    '-.||_/.-'               ",
-        "                 /\\/\\/\\/\\/\\/\\/\\           ",
-        "                 | || || || || |            ",
-        "                  \\/ \\/ \\/ \\/             ",
-    }) {
-        lines.push_back(text(art_line) | color(ftxui::Color::RGB(180, 120, 45)));
-    }
     lines.push_back(text(""));
     for (size_t i = 0; i < boot_displayed_.size(); ++i) {
         const std::string& l = boot_displayed_[i];
@@ -464,25 +438,6 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
 
 int TuiApp::Run() {
     shell_ = ShellHost::Create();
-
-#ifdef _WIN32
-    // Double the console window height so boot messages and art are fully visible
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (GetConsoleScreenBufferInfo(hOut, &csbi)) {
-        int curH  = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-        int newH  = std::min(curH * 2, 80);  // cap at 80 rows
-        int newW  = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-        // Expand buffer first (can't shrink window below buffer)
-        COORD buf = csbi.dwSize;
-        buf.Y = static_cast<SHORT>(std::max((int)buf.Y, newH));
-        SetConsoleScreenBufferSize(hOut, buf);
-        SMALL_RECT rect = { 0, 0,
-            static_cast<SHORT>(newW - 1),
-            static_cast<SHORT>(newH - 1) };
-        SetConsoleWindowInfo(hOut, TRUE, &rect);
-    }
-#endif
 
     auto screen = ftxui::ScreenInteractive::Fullscreen();
 
