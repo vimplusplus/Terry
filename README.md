@@ -86,6 +86,8 @@ cmake --build build --config Release
 .\build\Release\terry.exe
 ```
 
+The built `terry.exe` includes the application icon — it appears in File Explorer, the taskbar, and Windows Search. Pin it to the taskbar or create a shortcut on the desktop and it will launch your terminal with a single click.
+
 ### Linux
 
 ```bash
