@@ -54,6 +54,20 @@ static constexpr const char* kLabels[] = {
 };
 static constexpr int kLabelCount = 6;
 
+// ── Magical event config ──────────────────────────────────────────────────────
+
+struct EventConfig {
+    const char* label;
+    float cd_min, cd_max;  // cooldown range (seconds)
+    float duration;         // active duration (seconds)
+};
+
+static const EventConfig kEventConfig[kEventCount] = {
+    {"OCTARINE STORM",           120.0f, 480.0f, 4.0f},
+    {"NARRATIVIUM SURGE",        180.0f, 480.0f, 2.0f},
+    {"THE LUGGAGE IS DISPLEASED", 90.0f, 480.0f, 6.0f},
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 static std::string current_time_str() {
@@ -80,13 +94,27 @@ static std::string str_truncate(const std::string& s, int max_len) {
     return "..." + s.substr(s.size() - static_cast<size_t>(max_len - 3));
 }
 
+// Split a UTF-8 string into one std::string per Unicode codepoint
+static std::vector<std::string> split_utf8(const std::string& s) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i < s.size()) {
+        auto c = static_cast<unsigned char>(s[i]);
+        int len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+        out.push_back(s.substr(i, static_cast<size_t>(len)));
+        i += static_cast<size_t>(len);
+    }
+    return out;
+}
+
 // ── TerryNode — custom FTXUI node rendering our terminal cell buffer ──────────
 
 class TerryNode : public ftxui::Node {
 public:
     TerryNode(CellBuffer& buf, ParticleSystem& ps,
+              const std::vector<SpriteOverlay>& overlays,
               int cursor_col, int cursor_row, bool cursor_vis)
-        : buf_(buf), ps_(ps),
+        : buf_(buf), ps_(ps), overlays_(overlays),
           cursor_col_(cursor_col), cursor_row_(cursor_row),
           cursor_vis_(cursor_vis) {}
 
@@ -131,17 +159,61 @@ public:
             }
         }
 
-        // Particle overlay on blank cells
+        // Particle overlay — typed particles with comet trails
         for (const auto& p : ps_.particles) {
+            // Comet trail
+            if (p.type == ParticleType::Comet) {
+                int tx = static_cast<int>(p.prev_x);
+                int ty = static_cast<int>(p.prev_y);
+                if (tx >= 0 && tx < w && ty >= 0 && ty < h) {
+                    int bc = std::min(tx, buf_.Cols() - 1);
+                    int br = std::min(ty, buf_.Rows() - 1);
+                    if (buf_.At(bc, br).ch == U' ') {
+                        ftxui::Pixel& px = screen.PixelAt(ox + tx, oy + ty);
+                        px.character = ".";
+                        px.foreground_color = ftxui::Color::RGB(100, 90, 180);
+                    }
+                }
+            }
             int col = static_cast<int>(p.x);
             int row = static_cast<int>(p.y);
             if (col < 0 || col >= w || row < 0 || row >= h) continue;
             int bc = std::min(col, buf_.Cols() - 1);
             int br = std::min(row, buf_.Rows() - 1);
             if (buf_.At(bc, br).ch == U' ') {
+                const auto& def = particle_type_def(p.type);
                 ftxui::Pixel& px = screen.PixelAt(ox + col, oy + row);
-                px.character = std::string(1, p.glyph);
-                px.foreground_color = ftxui::Color::RGB(100, 50, 180);
+                px.character = p.glyph;
+                px.foreground_color = ftxui::Color::RGB(def.r, def.g, def.b);
+            }
+        }
+
+        // Sprite overlay pass — sorted by z-order ascending
+        // (lower z drawn first, higher z draws on top)
+        auto sorted = overlays_;
+        std::sort(sorted.begin(), sorted.end(),
+            [](const SpriteOverlay& a, const SpriteOverlay& b) { return a.z < b.z; });
+
+        for (const auto& ov : sorted) {
+            int sx0 = static_cast<int>(ov.x);
+            int sy0 = static_cast<int>(ov.y);
+            for (int ri = 0; ri < (int)ov.rows.size(); ++ri) {
+                const auto& row = ov.rows[ri];
+                auto chars = split_utf8(row.text);
+                for (int ci = 0; ci < (int)chars.size(); ++ci) {
+                    int sx = sx0 + ci;
+                    int sy = sy0 + ri;
+                    if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+                    if (ov.skip_nonempty) {
+                        int bc = std::min(sx, buf_.Cols() - 1);
+                        int br = std::min(sy, buf_.Rows() - 1);
+                        if (buf_.At(bc, br).ch != U' ') continue;
+                    }
+                    ftxui::Pixel& px = screen.PixelAt(ox + sx, oy + sy);
+                    px.character = chars[ci];
+                    px.foreground_color = ftxui::Color::RGB(
+                        row.color.r, row.color.g, row.color.b);
+                }
             }
         }
 
@@ -154,6 +226,7 @@ public:
 private:
     CellBuffer&     buf_;
     ParticleSystem& ps_;
+    const std::vector<SpriteOverlay>& overlays_;
     int  cursor_col_, cursor_row_;
     bool cursor_vis_;
 };
@@ -169,11 +242,18 @@ TuiApp::TuiApp(Config cfg)
     luggage_.vel      = 4.0f;
     luggage_.pause_cd = 8.0f;
     rincewind_.active   = false;
-    rincewind_.cameo_cd = 45.0f;
+    rincewind_.cameo_cd = 10.0f;  // first cameo quickly
     rincewind_.x        = 0.0f;
-    rincewind_.speed    = 40.0f;
-    particles_.Init(term_cols_, term_rows_, 10);
+    rincewind_.speed    = 30.0f;
+    particles_.Init(term_cols_, term_rows_, 15);
     last_tick_ = Clock::now();
+    // Stagger initial event cooldowns so they don’t all fire at once
+    static std::mt19937 erng{7777};
+    for (int i = 0; i < kEventCount; ++i) {
+        std::uniform_real_distribution<float> cd(
+            kEventConfig[i].cd_min, kEventConfig[i].cd_max);
+        events_[i].cooldown = cd(erng);
+    }
 }
 
 void TuiApp::PollCwd() {
@@ -236,12 +316,53 @@ void TuiApp::UpdateLive(float delta) {
         label_index_ = (label_index_ + 1) % kLabelCount;
         label_timer_ = 8.0f;
     }
+
+    // Flash timer
+    if (flash_timer_ > 0.0f) flash_timer_ -= delta;
+
+    // ── Magical event system ─────────────────────────────────────────────────
+    static std::mt19937 erng{1234};
+    for (int i = 0; i < kEventCount; ++i) {
+        EventState& ev  = events_[i];
+        const auto& cfg = kEventConfig[i];
+
+        if (ev.active) {
+            ev.remaining -= delta;
+            if (ev.remaining <= 0.0f) {
+                ev.active = false;
+                // Deactivate effects
+                if (i == EVT_OCTARINE_STORM)    particles_.target_count = particles_.base_count;
+                if (i == EVT_LUGGAGE_RAMPAGE)   luggage_.event_mult = 1.0f;
+                // Start next cooldown
+                std::uniform_real_distribution<float> cd(cfg.cd_min, cfg.cd_max);
+                ev.cooldown = cd(erng);
+            }
+        } else {
+            ev.cooldown -= delta;
+            if (ev.cooldown <= 0.0f) {
+                ev.active    = true;
+                ev.remaining = cfg.duration;
+                flash_message_ = cfg.label;
+                flash_timer_   = 1.5f;
+                // Activate effects
+                if (i == EVT_OCTARINE_STORM)  particles_.target_count = particles_.base_count * 8;
+                if (i == EVT_LUGGAGE_RAMPAGE) luggage_.event_mult = 3.0f;
+            }
+        }
+    }
+
+    // NarrativiumSurge: spawn one rune per column per frame while active
+    if (events_[EVT_NARRATIVIUM_SURGE].active) {
+        for (int col = 0; col < term_cols_; ++col)
+            particles_.SpawnRune(col);
+    }
 }
+
 
 void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
     anim_time_ += delta;
-    update_luggage(luggage_, delta, term_cols_);
-    update_rincewind(rincewind_, delta, term_cols_);
+    update_luggage(luggage_, delta, term_cols_, rincewind_.x, rincewind_.active);
+    update_rincewind(rincewind_, delta, term_cols_, luggage_.pos);
     particles_.Update(delta, term_cols_, term_rows_);
 
     if (state_ == AppState::Boot)      UpdateBoot(delta);
@@ -254,7 +375,7 @@ void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
 
 ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
     return std::make_shared<TerryNode>(
-        buf_, particles_,
+        buf_, particles_, frame_overlays_,
         buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible());
 }
 
@@ -293,12 +414,10 @@ ftxui::Element TuiApp::RenderStatusBar(int /*cols*/) {
     if (slash != std::string::npos) sh = sh.substr(slash + 1);
 
     std::string cwd_str = str_truncate(cwd_, 30);
-    std::string label   = kLabels[label_index_];
+    std::string label   = (flash_timer_ > 0.0f) ? flash_message_ : kLabels[label_index_];
     std::string timestr = current_time_str();
 
     return hbox({
-        text(" DEATH ") | color(theme_.death) | bold,
-        separator(),
         text(" " + cwd_str + " ") | color(theme_.text),
         separator(),
         text(" " + sh + " ")      | color(theme_.dim),
@@ -321,7 +440,7 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
         term_cols_ = inner_cols;
         term_rows_ = inner_rows;
         buf_.Resize(term_cols_, term_rows_);
-        particles_.Init(term_cols_, term_rows_, 10);
+        particles_.Init(term_cols_, term_rows_, particles_.base_count);
         if (shell_ && shell_->IsRunning())
             shell_->Resize(term_cols_, term_rows_);
     }
@@ -334,11 +453,19 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
     } else if (farewell_showing_) {
         content = vbox({
             filler(),
-            text("  DEATH: AND SO IT ENDS.") | color(theme_.death) | bold,
-            text("         I TRUST YOU USED THE TIME WISELY.") | color(theme_.death),
+            text("  DEATH: " + std::string(death_farewell())) | color(theme_.death) | bold,
             filler(),
         });
     } else {
+        // Build sprite overlay list for this frame
+        frame_overlays_.clear();
+        frame_overlays_.push_back(death_overlay(anim_time_, inner_rows));
+        frame_overlays_.push_back(luggage_overlay(luggage_, inner_rows));
+        if (rincewind_.active)
+            frame_overlays_.push_back(rincewind_overlay(rincewind_));
+        // sort ascending z (lower z drawn first)
+        std::sort(frame_overlays_.begin(), frame_overlays_.end(),
+            [](const SpriteOverlay& a, const SpriteOverlay& b) { return a.z < b.z; });
         content = RenderTerminalArea(inner_cols, inner_rows);
     }
     content = content | size(WIDTH, EQUAL, inner_cols)
@@ -349,18 +476,7 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
     int pad = std::max(0, (inner_cols - static_cast<int>(title_str.size())) / 2);
     std::string title_padded(static_cast<size_t>(pad), ' ');
     title_padded += title_str;
-
-    // Rincewind cameo
-    if (rincewind_.active) {
-        int rx = static_cast<int>(rincewind_.x);
-        const char* rw = rincewind_sprite();
-        int rw_len = static_cast<int>(std::strlen(rw));
-        int max_rx = static_cast<int>(title_padded.size()) - rw_len;
-        if (rx >= 0 && rx < max_rx) {
-            title_padded.replace(static_cast<size_t>(rx),
-                                 static_cast<size_t>(rw_len), rw);
-        }
-    }
+    // (Rincewind now rendered as sprite overlay on terminal content, not in title)
 
     auto status = RenderStatusBar(inner_cols);
 

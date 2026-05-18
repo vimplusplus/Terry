@@ -36,7 +36,22 @@
 
 namespace terry {
 
+// ── Event system ──────────────────────────────────────────────────────────────
+
+struct EventState {
+    float cooldown  = 0.0f;  // seconds until next activation
+    float remaining = 0.0f;  // seconds of active time left
+    bool  active    = false;
+};
+
+} // namespace terry (re-opened below)
+
+namespace terry {
+
 enum class AppState { Boot, Live, Exit };
+
+static constexpr int kEventCount = 3;
+enum EventId { EVT_OCTARINE_STORM = 0, EVT_NARRATIVIUM_SURGE = 1, EVT_LUGGAGE_RAMPAGE = 2 };
 
 class TuiApp {
 public:
@@ -54,8 +69,10 @@ private:
     CellBuffer   buf_;
     VtParser     parser_;
     ParticleSystem particles_;
-    LuggageState luggage_;
+    LuggageState   luggage_;
     RincewindState rincewind_;
+    DeathState     death_;
+    std::vector<SpriteOverlay> frame_overlays_;
     std::unique_ptr<ShellHost> shell_;
 
     // State
@@ -88,6 +105,13 @@ private:
     // Current working directory (polled)
     std::string cwd_;
     float cwd_poll_timer_ = 0.0f;
+
+    // Status bar flash message
+    std::string flash_message_;
+    float       flash_timer_ = 0.0f;
+
+    // Magical event system
+    EventState events_[kEventCount];
 
     // Internal methods
     void OnTick(float delta, ftxui::ScreenInteractive& screen);
