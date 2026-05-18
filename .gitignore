@@ -13,6 +13,7 @@ theme/
 **/*.instructions.md
 **/*.agent.md
 **/SKILL.md
+**/AGENTS.md
 
 # Build output
 build/
