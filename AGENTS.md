@@ -49,9 +49,9 @@ Stop-Process -Name terry -Force -ErrorAction SilentlyContinue
 
 Output: `build\Release\terry.exe`
 
-Configure also runs `scripts/embed_skills.cmake` which reads SKILL.md files from
-`references/` and generates `src/generated/skill_content.h` (hex char arrays —
-raw string literals would hit MSVC's 65535-byte limit on large files).
+`src/generated/skill_content.h` is pre-generated and committed. `scripts/embed_skills.cmake`
+only regenerates it if a `references/` directory is present (hex char arrays — raw string
+literals would hit MSVC's 65535-byte limit on large files).
 
 ---
 
@@ -72,8 +72,8 @@ raw string literals would hit MSVC's 65535-byte limit on large files).
 | `src/background_art.cpp` | Full-screen ASCII art backgrounds |
 | `src/vscode_launcher.cpp` | Detect/install/open VS Code (rincewind command) |
 | `src/skill_registry.cpp` | Static array of 19 curated skills; includes generated content |
-| `src/generated/skill_content.h` | AUTO-GENERATED — do not edit. 19 SKILL.md files as hex char arrays |
-| `scripts/embed_skills.cmake` | Reads `references/*/SKILL.md`, writes skill_content.h |
+| `src/generated/skill_content.h` | Pre-generated skill content as hex char arrays — do not edit |
+| `scripts/embed_skills.cmake` | Regenerates skill_content.h if `references/` is present |
 
 ---
 
@@ -102,38 +102,11 @@ Boot ──► Live ──► LuggageBrowser ──► LuggageInstall ──► 
 
 ## The Luggage Command
 
-Type `luggage` at the prompt → full-screen browser opens with 19 curated skills in two tiers:
+Type `luggage` at the prompt → full-screen browser. Navigate: `↑↓` / `jk`. Toggle: `Space`.
+Confirm: `Enter`. Cancel: `Escape`.
 
-**Recommended (pre-checked):** caveman, caveman-commit, caveman-compress, caveman-help,
-caveman-review, caveman-stats, cavecrew, openspec-propose, openspec-apply-change,
-openspec-explore, openspec-archive-change, skill-creator
-
-**Optional:** pdf, pptx, docx, xlsx, officecli, canvas-design, frontend-design
-
-Navigate: `↑↓` / `jk`. Toggle: `Space`. Confirm: `Enter`. Cancel: `Escape`.
-
-On confirm → path input screen → Enter → background thread (`DoLuggageInstall`) creates:
-
-```
-<path>/
-├── input/               ← drop source files here
-├── output/              ← AI-generated files land here
-├── theme/
-│   └── raw/             ← drop brand documents here
-├── .github/
-│   └── skills/
-│       ├── <id>/SKILL.md    ← one per selected skill
-│       └── theme-extract/SKILL.md  ← always installed
-├── copilot-instructions.md  ← wires all skills + workspace conventions
-├── SKILLS.md                ← plain-English guide
-└── skills-lock.json         ← provenance (source repos + timestamps)
-```
-
-Open the folder in VS Code with GitHub Copilot → every skill is live immediately.
-
-**Theme workflow:** drop brand PDFs/decks into `theme/raw/`, say *"generate my theme"* →
-Copilot writes `theme/brand-guide.md` (persisted brand guide). All future document/
-presentation output reads it automatically.
+On confirm → path input → `DoLuggageInstall` thread scaffolds a VS Code workspace with
+selected skills and a `copilot-instructions.md`.
 
 ---
 
@@ -158,74 +131,12 @@ Implemented in `src/vscode_launcher.cpp`.
   `rincewind_log_mutex_`. Set `*_done_ = true` when finished.
 - **FTXUI:** `CatchEvent` returns `true` to consume an event (stop it reaching shell),
   `false` to pass it through.
-- **No fabrication:** Never invent facts about clients, brand values, or features.
-  If unconfirmed, say "unknown — confirm with client."
-
----
-
-## OpenSpec Workflow
-
-Changes are proposed, designed, and implemented via the OpenSpec workflow:
-
-```
-openspec/
-├── config.yaml           ← schema: spec-driven
-├── changes/
-│   ├── <name>/           ← active changes
-│   │   ├── proposal.md
-│   │   ├── design.md
-│   │   └── tasks.md
-│   └── archive/
-│       └── YYYY-MM-DD-<name>/   ← archived after implementation
-└── specs/
-```
-
-**Skills available** (in `.github/skills/`):
-- `/opsx:propose` — write a new change proposal + design + tasks in one step
-- `/opsx:apply` — implement tasks from a change
-- `/opsx:archive` — archive a completed change
-
-**Active changes:** none (all archived as of 2026-05-18)
-
----
-
-## References Folder
-
-`references/` contains source SKILL.md files embedded at build time. Not shipped in the
-final binary's data section directly — embedded via `scripts/embed_skills.cmake` into
-`src/generated/skill_content.h`.
-
-```
-references/
-├── Agentic Skills/caveman/skills/<name>/SKILL.md   ← 7 caveman skills
-├── BillingPlatform/.github/skills/<name>/SKILL.md  ← 12 skills (openspec + docs)
-└── Incite templates/                                ← brand reference docs (not embedded)
-```
-
----
-
-## Current State (as of 2026-05-18, commit a484b39)
-
-All three major features are complete and shipped:
-
-| Feature | Commit | Status |
-|---------|--------|--------|
-| Boot sequence + animated border | earlier | ✓ done |
-| Rincewind (VS Code launcher) | `a0c2f5d` | ✓ done |
-| Luggage skill browser (19 skills) | `f79a4fb` | ✓ done |
-| Luggage workspace scaffold (input/output/theme) | `a484b39` | ✓ done |
-
-No active OpenSpec changes. Ready for new proposals.
 
 ---
 
 ## What A New Agent Should Know
 
 1. **Build first.** Always kill `terry.exe` before building or you get LNK1104.
-2. **Don't edit `skill_content.h`** — it's auto-generated. Edit the source SKILL.md in
-   `references/` and re-run cmake configure.
+2. **Don't edit `skill_content.h`** — it's pre-generated and committed. To update skill content, add a `references/` directory and re-run cmake configure.
 3. **`tui_app.cpp` is the main file.** Most features live here.
 4. **CatchEvent returns bool.** `true` = consumed (don't pass to shell). `false` = pass through.
-5. **Use OpenSpec** for any non-trivial change. `/opsx:propose` → implement → `/opsx:archive`.
-6. **Caveman mode is on** by default (see `.github/copilot-instructions.md`). Responses are terse.
-   Code and commits are written normally regardless.

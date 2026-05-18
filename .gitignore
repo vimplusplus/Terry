@@ -1,7 +1,11 @@
 # OpenSpec workflow artifacts
 openspec/
 
-# Agent and Copilot customization files
+# Agentic / Copilot customization files — not part of the product
+.agents/
+references/
+skills-lock.json
+theme/
 .github/prompts/
 .github/skills/
 .github/copilot-instructions.md
@@ -9,7 +13,6 @@ openspec/
 **/*.instructions.md
 **/*.agent.md
 **/SKILL.md
-**/AGENTS.md
 
 # Build output
 build/
