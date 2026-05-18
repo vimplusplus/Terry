@@ -1,6 +1,6 @@
 # Terry
 
-![Terry Pratchett](../assets/Terry_Pratchett_1.jpg)
+![Terry Pratchett](assets/Terry_Pratchett_1.jpg)
 
 ---
 

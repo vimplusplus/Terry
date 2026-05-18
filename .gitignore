@@ -12,4 +12,4 @@ openspec/
 **/AGENTS.md
 
 # Build output
-Octarine-CLI/build/
+build/
