@@ -29,13 +29,14 @@ set(SOURCES
 
 if(WIN32)
     list(APPEND SOURCES src/shell_host_windows.cpp)
-    # Embed application icon so the EXE shows it in Explorer, taskbar, and search
+    # Embed application icon (resource ID 1 = Windows auto-selects as app icon)
     enable_language(RC)
-    set(RC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/assets/terry.rc")
-    set_source_files_properties(${RC_FILE} PROPERTIES
-        COMPILE_FLAGS "/I\"${CMAKE_CURRENT_SOURCE_DIR}/assets\""
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/terry.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/terry.rc"
+        @ONLY
     )
-    list(APPEND SOURCES ${RC_FILE})
+    list(APPEND SOURCES "${CMAKE_CURRENT_BINARY_DIR}/terry.rc")
 else()
     list(APPEND SOURCES src/shell_host_posix.cpp)
 endif()
