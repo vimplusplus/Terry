@@ -26,6 +26,7 @@ set(SOURCES
     src/animations.cpp
     src/background_art.cpp
     src/tui_app.cpp
+    src/vscode_launcher.cpp
 )
 
 if(WIN32)
@@ -55,6 +56,11 @@ target_link_libraries(terry PRIVATE
 # forkpty lives in libutil on Linux
 if(UNIX)
     target_link_libraries(terry PRIVATE util)
+endif()
+
+# WinINet (download) and Shell32 (ShellExecute) for Rincewind command
+if(WIN32)
+    target_link_libraries(terry PRIVATE wininet shell32)
 endif()
 
 # Suppress MSVC noise and prevent Windows macro conflicts

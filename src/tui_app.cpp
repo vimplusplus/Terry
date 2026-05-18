@@ -16,6 +16,7 @@
 #endif
 
 #include "tui_app.h"
+#include "vscode_launcher.h"
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -363,8 +364,8 @@ void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
     }
     particles_.Update(delta, term_cols_, term_rows_);
 
-    if (state_ == AppState::Boot)      UpdateBoot(delta);
-    else if (state_ == AppState::Live) UpdateLive(delta);
+    if (state_ == AppState::Boot)           UpdateBoot(delta);
+    else if (state_ == AppState::Live)      UpdateLive(delta);
 
     if (quit_) screen.ExitLoopClosure()();
 }
@@ -435,6 +436,8 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
     ftxui::Element content;
     if (state_ == AppState::Boot) {
         content = RenderBoot(inner_cols, inner_rows);
+    } else if (state_ == AppState::Rincewind) {
+        content = RenderRincewind(inner_cols, inner_rows);
     } else if (farewell_showing_) {
         content = vbox({
             filler(),
@@ -486,6 +489,114 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
     });
 }
 
+// ── Rincewind ─────────────────────────────────────────────────────────────────
+
+void TuiApp::ResetRincewindState() {
+    // Detach thread if it's still running so we don't block
+    if (rincewind_thread_.joinable()) rincewind_thread_.detach();
+    {
+        std::lock_guard<std::mutex> lk(rincewind_log_mutex_);
+        rincewind_log_.clear();
+    }
+    rincewind_done_  = false;
+    rincewind_error_ = false;
+    rincewind_cwd_.clear();
+    state_ = AppState::Live;
+}
+
+void TuiApp::StartRincewindWorker() {
+    if (rincewind_thread_.joinable()) rincewind_thread_.detach();
+
+    rincewind_thread_ = std::thread([this] {
+        // Helper: append a log line and trigger a TUI redraw.
+        // Captured by pointer — the lambda lifetime is scoped to this thread.
+        // Note: screen is not accessible here, so we use the timer loop's
+        // PostEvent path by writing to the log; the render loop picks it up
+        // on the next frame.
+        auto post = [this](const std::string& line) {
+            std::lock_guard<std::mutex> lk(rincewind_log_mutex_);
+            rincewind_log_.push_back(line);
+        };
+
+        post("Checking for VS Code...");
+        std::string code_path = DetectVsCode();
+
+        if (code_path.empty()) {
+            post("VS Code not found. Installing...");
+            if (!InstallVsCode(post)) {
+                rincewind_error_ = true;
+                rincewind_done_  = true;
+                return;
+            }
+            code_path = DetectVsCode();
+            if (code_path.empty()) {
+                post("x VS Code installed but could not be located.");
+                rincewind_error_ = true;
+                rincewind_done_  = true;
+                return;
+            }
+        } else {
+            post("+ VS Code found: " + code_path);
+        }
+
+        // Install extensions (best-effort)
+        InstallExtension(code_path, "github.copilot",      post);
+        InstallExtension(code_path, "github.copilot-chat", post);
+
+        // Open VS Code at the captured CWD
+        OpenVsCode(code_path, rincewind_cwd_, post);
+
+        post("");
+        if (!rincewind_error_) {
+            post("  VS Code is open. Press any key to return to the shell.");
+        } else {
+            post("  Completed with errors. Press any key to return to the shell.");
+        }
+        rincewind_done_ = true;
+    });
+}
+
+ftxui::Element TuiApp::RenderRincewind(int cols, int /*rows*/) {
+    using namespace ftxui;
+    ftxui::Color title_col = Color::RGB(180, 100, 255);  // octarine purple
+
+    // Snapshot log under lock
+    std::vector<std::string> lines;
+    {
+        std::lock_guard<std::mutex> lk(rincewind_log_mutex_);
+        lines = rincewind_log_;
+    }
+
+    std::vector<Element> log_elems;
+    for (const auto& l : lines) {
+        Color c = theme_.text;
+        if (!l.empty()) {
+            if (l[0] == '+') c = Color::RGB(0, 220, 100);   // green = success
+            if (l[0] == 'x') c = Color::RGB(255, 80, 80);   // red = error
+            if (l[0] == '!') c = Color::RGB(255, 180, 0);   // amber = warning
+        }
+        log_elems.push_back(text("  " + l) | color(c));
+    }
+    if (log_elems.empty()) {
+        log_elems.push_back(text("") | color(theme_.dim));
+    }
+
+    Element log_box = vbox(std::move(log_elems))
+                      | size(WIDTH, EQUAL, cols - 2);
+
+    std::string title_text = " RINCEWIND ";
+    int pad = std::max(0, (cols - 2 - static_cast<int>(title_text.size())) / 2);
+    std::string title_padded(static_cast<size_t>(pad), '=');
+    title_padded += title_text;
+
+    return vbox({
+        text(title_padded) | bold | color(title_col),
+        separator()        | color(title_col),
+        log_box,
+        filler(),
+    });
+}
+
 // ── Run() ─────────────────────────────────────────────────────────────────────
 
 int TuiApp::Run() {
@@ -517,22 +628,55 @@ int TuiApp::Run() {
         }
 
         if (state_ == AppState::Live && shell_ && shell_->IsRunning()) {
-            if (event.is_character()) { shell_->Write(event.character());  return true; }
-            if (event == Event::Return)     { SpawnShootingStar(); shell_->Write("\r"); return true; }
-            if (event == Event::Backspace)  { shell_->Write("\x7f");    return true; }
+            if (event.is_character()) {
+                typed_line_ += event.character();
+                shell_->Write(event.character());
+                return true;
+            }
+            if (event == Event::Return) {
+                if (typed_line_ == "rincewind") {
+                    typed_line_.clear();
+                    rincewind_cwd_ = get_cwd();
+                    state_ = AppState::Rincewind;
+                    StartRincewindWorker();
+                    return true;
+                }
+                typed_line_.clear();
+                SpawnShootingStar();
+                shell_->Write("\r");
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!typed_line_.empty()) typed_line_.pop_back();
+                shell_->Write("\x7f");
+                return true;
+            }
             if (event == Event::Tab)        { shell_->Write("\t");      return true; }
-            if (event == Event::Escape)     { shell_->Write("\x1b");    return true; }
-            if (event == Event::ArrowUp)    { shell_->Write("\x1b[A");  return true; }
-            if (event == Event::ArrowDown)  { shell_->Write("\x1b[B");  return true; }
+            if (event == Event::Escape)     { typed_line_.clear(); shell_->Write("\x1b");    return true; }
+            if (event == Event::ArrowUp)    { typed_line_.clear(); shell_->Write("\x1b[A");  return true; }
+            if (event == Event::ArrowDown)  { typed_line_.clear(); shell_->Write("\x1b[B");  return true; }
             if (event == Event::ArrowRight) { shell_->Write("\x1b[C");  return true; }
             if (event == Event::ArrowLeft)  { shell_->Write("\x1b[D");  return true; }
-            if (event == Event::Home)       { shell_->Write("\x1b[H");  return true; }
+            if (event == Event::Home)       { typed_line_.clear(); shell_->Write("\x1b[H");  return true; }
             if (event == Event::End)        { shell_->Write("\x1b[F");  return true; }
             if (event == Event::Delete)     { shell_->Write("\x1b[3~"); return true; }
             if (event == Event::PageUp)     { shell_->Write("\x1b[5~"); return true; }
             if (event == Event::PageDown)   { shell_->Write("\x1b[6~"); return true; }
             if (!event.input().empty()) { shell_->Write(event.input()); return true; }
         }
+
+        if (state_ == AppState::Rincewind) {
+            if (event == Event::Escape) {
+                ResetRincewindState();
+                return true;
+            }
+            if (rincewind_done_) {
+                ResetRincewindState();
+                return true;
+            }
+            return true;
+        }
+
         return false;
     });
 

@@ -32,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <thread>
 
 namespace terry {
 
@@ -56,7 +57,7 @@ struct ShootingStar {
     bool  active  = false;
 };
 
-enum class AppState { Boot, Live, Exit };
+enum class AppState { Boot, Live, Rincewind, Exit };
 
 static constexpr int kEventCount = 3;
 enum EventId { EVT_OCTARINE_STORM = 0, EVT_NARRATIVIUM_SURGE = 1, EVT_LUGGAGE_RAMPAGE = 2 };
@@ -120,6 +121,17 @@ private:
     // Shooting star (fired on Enter)
     ShootingStar shoot_star_;
 
+    // typed_line_ — shadow buffer tracking what the user is typing for command interception
+    std::string typed_line_;
+
+    // Rincewind state
+    std::vector<std::string> rincewind_log_;
+    std::mutex               rincewind_log_mutex_;
+    bool                     rincewind_done_  = false;
+    bool                     rincewind_error_ = false;
+    std::string              rincewind_cwd_;
+    std::thread              rincewind_thread_;
+
     // Internal methods
     void OnTick(float delta, ftxui::ScreenInteractive& screen);
     void UpdateBoot(float delta);
@@ -132,6 +144,10 @@ private:
     ftxui::Element RenderTerminalArea(int cols, int rows);
     ftxui::Element RenderStatusBar(int cols);
     ftxui::Element RenderBorder(ftxui::Element inner, int cols, int rows);
+    ftxui::Element RenderRincewind(int cols, int rows);
+
+    void StartRincewindWorker();
+    void ResetRincewindState();
 };
 
 } // namespace terry
