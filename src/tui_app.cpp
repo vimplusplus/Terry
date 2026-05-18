@@ -231,28 +231,6 @@ public:
                     continue;
                 }
 
-                // ── Background slideshow art ──────────────────────────────────
-                if (slideshow_) {
-                    float art_bright = 0.0f;
-                    int   art_pidx   = -1;
-                    char  art_ch = slideshow_->char_at(col, row, art_bright, &art_pidx);
-                    if (art_ch != ' ' && art_pidx >= 0) {
-                        const ArtPiece ap = background_art::piece(art_pidx);
-                        float b = art_bright * crt;
-                        float lerp = art_bright;  // 0=dim colour, 1=bright
-                        auto lc = [&](uint8_t d, uint8_t brt) -> uint8_t {
-                            return static_cast<uint8_t>(std::min(255.0f,
-                                (d + static_cast<float>(brt - d) * lerp) * b * 2.8f));
-                        };
-                        px.character        = std::string(1, art_ch);
-                        px.foreground_color = ftxui::Color::RGB(
-                            lc(ap.dim_r, ap.bright_r),
-                            lc(ap.dim_g, ap.bright_g),
-                            lc(ap.dim_b, ap.bright_b));
-                        continue;
-                    }
-                }
-
                 // ── Phosphor burn-in: recently-vacated cells linger ───────────
                 if (burn_ && burn_ch_) {
                     int bidx = br * buf_.Cols() + bc;
