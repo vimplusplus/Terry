@@ -115,6 +115,10 @@ private:
     std::string flash_message_;
     float       flash_timer_ = 0.0f;
 
+    // Quote ticker
+    int   quote_index_ = 0;
+    float quote_x_     = 0.0f;
+
     // Magical event system
     EventState events_[kEventCount];
 

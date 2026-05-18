@@ -54,8 +54,20 @@ static constexpr const char* kLabels[] = {
     "OOK",
     "WHERE'S MY LUGGAGE?",
     "SPACE: THE UNIMAGINATIVE FRONTIER",
+    "MILLION-TO-ONE CHANCES CROP UP NINE TIMES OUT OF TEN",
+    "THE TURTLE MOVES",
+    "NARRATIVIUM DETECTED",
+    "NUNC TEMPORIS FUGIT",
+    "TURTLES ALL THE WAY DOWN",
+    "BEWARE THE WIZZARD",
+    "I ATE'NT DEAD",
+    "THERE'S NO PLACE LIKE ANKH-MORPORK",
+    "THE WIZZARD IS IN",
+    "WORDS IN THE HEART CANNOT BE TAKEN",
+    "KNEEL BEFORE THE NARRATIVE",
+    "RUNNING ON NARRATIVIUM",
 };
-static constexpr int kLabelCount = 6;
+static constexpr int kLabelCount = 18;
 
 // ── Magical event config ──────────────────────────────────────────────────────
 
@@ -70,6 +82,29 @@ static const EventConfig kEventConfig[kEventCount] = {
     {"NARRATIVIUM SURGE",        180.0f, 480.0f, 2.0f},
     {"THE LUGGAGE IS DISPLEASED", 90.0f, 480.0f, 6.0f},
 };
+
+// ── Discworld quote ticker ────────────────────────────────────────────────────
+
+static constexpr float kQuoteSpeed = 22.0f;  // columns per second
+
+static constexpr const char* kDiscworldQuotes[] = {
+    "\"Real stupidity beats artificial intelligence every time.\"",
+    "\"Million-to-one chances crop up nine times out of ten.\"",
+    "\"The truth may be out there, but the lies are inside your head.\"",
+    "\"Five exclamation marks, the sure sign of an insane mind.\"",
+    "\"Fantasy is an exercise bicycle for the mind.\"",
+    "\"I'd rather be a rising ape than a falling angel.\"",
+    "\"It's not worth doing something unless someone, somewhere, would much rather you weren't doing it.\"",
+    "\"Evil begins when you begin to treat people as things.\"",
+    "\"Stories of imagination tend to upset those without one.\"",
+    "\"Coming back to where you started is not the same as never leaving.\"",
+    "\"The Turtle Moves.\"",
+    "\"Wisdom comes from experience. Experience is often a result of lack of wisdom.\"",
+    "\"The pen is mightier than the sword if the sword is very short and the pen is very sharp.\"",
+    "\"Nanny Ogg knew how to start spelling 'banana', but didn't know how you stopped.\"",
+    "\"Personal isn't the same as important.\"",
+};
+static constexpr int kQuoteCount = 15;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -229,6 +264,7 @@ TuiApp::TuiApp(Config cfg)
       parser_(buf_) {
     cwd_ = get_cwd();
     particles_.Init(term_cols_, term_rows_, 15);
+    quote_x_ = static_cast<float>(term_cols_);
     last_tick_ = Clock::now();
     // Stagger initial event cooldowns so they don’t all fire at once
     static std::mt19937 erng{7777};
@@ -360,6 +396,14 @@ void TuiApp::UpdateLive(float delta) {
 
 void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
     anim_time_ += delta;
+
+    // Advance quote ticker (always, regardless of state)
+    quote_x_ -= kQuoteSpeed * delta;
+    if (quote_x_ + static_cast<float>(std::strlen(kDiscworldQuotes[quote_index_])) < 0.0f) {
+        quote_index_ = (quote_index_ + 1) % kQuoteCount;
+        quote_x_ = static_cast<float>(term_cols_);
+    }
+
     if (shoot_star_.active) {
         shoot_star_.x    += shoot_star_.speed * delta;
         shoot_star_.life -= delta;
@@ -394,7 +438,7 @@ ftxui::Element TuiApp::RenderBoot(int /*cols*/, int /*rows*/) {
         }
     }
     lines.push_back(text("_") | color(theme_.highlight) | blink);
-    return vbox(std::move(lines));
+    return vbox(std::move(lines)) | center;
 }
 
 ftxui::Element TuiApp::RenderStatusBar(int /*cols*/) {
@@ -422,7 +466,7 @@ ftxui::Element TuiApp::RenderBorder(ftxui::Element inner, int /*cols*/, int /*ro
 }
 
 ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
-    int inner_rows = std::max(1, total_rows - 4);
+    int inner_rows = std::max(1, total_rows - 6);
     int inner_cols = std::max(1, total_cols - 2);
 
     if (inner_cols != term_cols_ || inner_rows != term_rows_) {
@@ -466,6 +510,18 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
 
     auto status = RenderStatusBar(inner_cols);
 
+    // Build scrolling quote line (ASCII viewport, inner_cols wide)
+    std::string quote_line(static_cast<size_t>(inner_cols), ' ');
+    {
+        const char* q  = kDiscworldQuotes[quote_index_];
+        int qlen = static_cast<int>(std::strlen(q));
+        int qx   = static_cast<int>(quote_x_);
+        for (int c = 0; c < inner_cols; ++c) {
+            int qi = c - qx;
+            if (qi >= 0 && qi < qlen) quote_line[static_cast<size_t>(c)] = q[qi];
+        }
+    }
+
     return vbox({
         hbox({
             text("\u2554") | color(bc),   // ╔
@@ -487,6 +543,16 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
             text("\u2551") | color(bc),   // ║
             status | flex,
             text("\u2551") | color(bc),   // ║
+        }),
+        hbox({
+            text("\u2560") | color(bc),   // ╠
+            separatorDouble() | color(bc),
+            text("\u2563") | color(bc),   // ╣
+        }),
+        hbox({
+            text("\u2551") | color(bc),                                              // ║
+            text(quote_line) | color(ftxui::Color::RGB(140, 90, 200)),             // quote
+            text("\u2551") | color(bc),                                              // ║
         }),
         hbox({
             text("\u255a") | color(bc),   // ╚
