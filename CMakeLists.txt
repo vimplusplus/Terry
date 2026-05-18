@@ -24,6 +24,7 @@ set(SOURCES
     src/boot_sequence.cpp
     src/particle_system.cpp
     src/animations.cpp
+    src/background_art.cpp
     src/tui_app.cpp
 )
 
