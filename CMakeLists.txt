@@ -61,11 +61,11 @@ else()
     list(APPEND SOURCES src/shell_host_posix.cpp)
 endif()
 
-add_executable(terry ${SOURCES})
+add_executable(Terry ${SOURCES})
 
-target_include_directories(terry PRIVATE include)
+target_include_directories(Terry PRIVATE include)
 
-target_link_libraries(terry PRIVATE
+target_link_libraries(Terry PRIVATE
     ftxui::screen
     ftxui::dom
     ftxui::component
@@ -73,16 +73,16 @@ target_link_libraries(terry PRIVATE
 
 # forkpty lives in libutil on Linux
 if(UNIX)
-    target_link_libraries(terry PRIVATE util)
+    target_link_libraries(Terry PRIVATE util)
 endif()
 
 # WinINet (download) and Shell32 (ShellExecute) for Rincewind command
 if(WIN32)
-    target_link_libraries(terry PRIVATE wininet shell32)
+    target_link_libraries(Terry PRIVATE wininet shell32)
 endif()
 
 # Suppress MSVC noise and prevent Windows macro conflicts
 if(MSVC)
-    target_compile_definitions(terry PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-    target_compile_options(terry PRIVATE /utf-8 /W3)
+    target_compile_definitions(Terry PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(Terry PRIVATE /utf-8 /W3)
 endif()

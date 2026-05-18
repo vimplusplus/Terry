@@ -21,6 +21,7 @@
 #include "shell_host.h"
 #include "particle_system.h"
 #include "boot_sequence.h"
+#include "background_art.h"
 
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -57,6 +58,14 @@ struct ShootingStar {
     bool  active  = false;
 };
 
+// ── LuggageRun — Luggage chest scurrying across the terminal top ───────────────
+struct LuggageRun {
+    float x        =  0.0f;
+    float speed    = 45.0f;
+    float leg_anim =  0.0f;
+    bool  active   = false;
+};
+
 enum class AppState { Boot, Live, LuggageBrowser, LuggageInstall, Rincewind, Exit };
 
 static constexpr int kEventCount = 3;
@@ -77,7 +86,8 @@ private:
     TerryTheme   theme_;
     CellBuffer   buf_;
     VtParser     parser_;
-    ParticleSystem      particles_;
+    ParticleSystem       particles_;
+    BackgroundSlideshow  slideshow_;
     std::unique_ptr<ShellHost> shell_;
 
     // State
@@ -124,6 +134,9 @@ private:
 
     // Shooting star (fired on Enter)
     ShootingStar shoot_star_;
+
+    // Luggage run (fired on LUGGAGE_RAMPAGE event)
+    LuggageRun luggage_run_;
 
     // typed_line_ — shadow buffer tracking what the user is typing for command interception
     std::string typed_line_;

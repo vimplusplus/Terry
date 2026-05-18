@@ -78,9 +78,9 @@ struct EventConfig {
 };
 
 static const EventConfig kEventConfig[kEventCount] = {
-    {"OCTARINE STORM",           120.0f, 480.0f, 4.0f},
-    {"NARRATIVIUM SURGE",        180.0f, 480.0f, 2.0f},
-    {"THE LUGGAGE IS DISPLEASED", 90.0f, 480.0f, 6.0f},
+    {"OCTARINE STORM",            15.0f,  60.0f, 4.0f},
+    {"NARRATIVIUM SURGE",         20.0f,  65.0f, 2.0f},
+    {"THE LUGGAGE IS DISPLEASED", 12.0f,  50.0f, 6.0f},
 };
 
 // ── Discworld quote ticker ────────────────────────────────────────────────────
@@ -137,9 +137,12 @@ static std::string str_truncate(const std::string& s, int max_len) {
 class TerryNode : public ftxui::Node {
 public:
     TerryNode(CellBuffer& buf, ParticleSystem& ps,
-              const ShootingStar* star,
+              const ShootingStar*  star,
+              BackgroundSlideshow* slideshow,
+              const LuggageRun*    luggage_run,
               int cursor_col, int cursor_row, bool cursor_vis)
         : buf_(buf), ps_(ps), star_(star),
+          slideshow_(slideshow), luggage_run_(luggage_run),
           cursor_col_(cursor_col), cursor_row_(cursor_row),
           cursor_vis_(cursor_vis) {}
 
@@ -245,12 +248,44 @@ public:
                 px.bold             = true;
             }
         }
+
+        // ── Luggage run — scurries left-to-right across the top ─────────────────
+        if (luggage_run_ && luggage_run_->active) {
+            int  lx   = static_cast<int>(luggage_run_->x);
+            bool legA = (static_cast<int>(luggage_run_->leg_anim * 6.0f) % 2) == 0;
+            // 5-char wide, 3-row sprite:  .===.  |###|  /| |\  or  _| |_
+            static constexpr char kLid []  = ".===";
+            static constexpr char kBody[]  = "|###";
+            static constexpr char kFeetA[] = "/| |";
+            static constexpr char kFeetB[] = "_| |";
+            const char* feet = legA ? kFeetA : kFeetB;
+            constexpr int sw = 4;
+            auto dpx = [&](int dr, int dc, char ch) {
+                int sc = lx + dc, sr = dr;
+                if (sc < 0 || sc >= w || sr < 0 || sr >= h || ch == ' ') return;
+                ftxui::Pixel& px = screen.PixelAt(ox + sc, oy + sr);
+                px.character        = std::string(1, ch);
+                px.foreground_color = ftxui::Color::RGB(210, 160, 50);
+                px.bold             = true;
+            };
+            for (int i = 0; i < sw; ++i) {
+                dpx(0, i, kLid[i]);
+                dpx(1, i, kBody[i]);
+                dpx(2, i, feet[i]);
+            }
+            // Right wall of sprite
+            dpx(0, sw, '.');
+            dpx(1, sw, '|');
+            dpx(2, sw, legA ? '\\' : '_');
+        }
     }
 
 private:
     CellBuffer&           buf_;
     ParticleSystem&       ps_;
     const ShootingStar*   star_;
+    BackgroundSlideshow*  slideshow_;
+    const LuggageRun*     luggage_run_;
     int  cursor_col_, cursor_row_;
     bool cursor_vis_;
 };
@@ -264,6 +299,7 @@ TuiApp::TuiApp(Config cfg)
       parser_(buf_) {
     cwd_ = get_cwd();
     particles_.Init(term_cols_, term_rows_, 15);
+    slideshow_.set_terminal_size(term_cols_, term_rows_);
     quote_x_ = static_cast<float>(term_cols_);
     last_tick_ = Clock::now();
     // Stagger initial event cooldowns so they don’t all fire at once
@@ -357,6 +393,15 @@ void TuiApp::UpdateLive(float delta) {
     // Flash timer
     if (flash_timer_ > 0.0f) flash_timer_ -= delta;
 
+    // ── Background slideshow + Luggage run ───────────────────────────────────
+    slideshow_.tick(delta);
+    if (luggage_run_.active) {
+        luggage_run_.x        += luggage_run_.speed * delta;
+        luggage_run_.leg_anim += delta;
+        if (luggage_run_.x > static_cast<float>(term_cols_ + 10))
+            luggage_run_.active = false;
+    }
+
     // ── Magical event system ─────────────────────────────────────────────────
     static std::mt19937 erng{1234};
     for (int i = 0; i < kEventCount; ++i) {
@@ -376,12 +421,23 @@ void TuiApp::UpdateLive(float delta) {
         } else {
             ev.cooldown -= delta;
             if (ev.cooldown <= 0.0f) {
-                ev.active    = true;
-                ev.remaining = cfg.duration;
+                ev.active      = true;
+                ev.remaining   = cfg.duration;
                 flash_message_ = cfg.label;
                 flash_timer_   = 1.5f;
                 // Activate effects
-                if (i == EVT_OCTARINE_STORM)    particles_.target_count = particles_.base_count * 8;
+                if (i == EVT_OCTARINE_STORM) {
+                    particles_.target_count = particles_.base_count * 8;
+                    slideshow_.flash(0);  // Death art
+                }
+                if (i == EVT_NARRATIVIUM_SURGE) slideshow_.flash(2);  // Rincewind art
+                if (i == EVT_LUGGAGE_RAMPAGE) {
+                    slideshow_.flash(1);  // Luggage art
+                    luggage_run_.x        = static_cast<float>(-5);
+                    luggage_run_.speed    = 45.0f;
+                    luggage_run_.leg_anim = 0.0f;
+                    luggage_run_.active   = true;
+                }
             }
         }
     }
@@ -422,6 +478,7 @@ void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
 ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
     return std::make_shared<TerryNode>(
         buf_, particles_, &shoot_star_,
+        &slideshow_, &luggage_run_,
         buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible());
 }
 
@@ -474,6 +531,7 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
         term_rows_ = inner_rows;
         buf_.Resize(term_cols_, term_rows_);
         particles_.Init(term_cols_, term_rows_, particles_.base_count);
+        slideshow_.set_terminal_size(term_cols_, term_rows_);
         if (shell_ && shell_->IsRunning())
             shell_->Resize(term_cols_, term_rows_);
     }
