@@ -47,6 +47,15 @@ struct EventState {
 
 namespace terry {
 
+// ── ShootingStar — one-shot comet fired on Enter ──────────────────────────────
+struct ShootingStar {
+    float x       = 0.0f;
+    float speed   = 0.0f;   // cols/sec — positive = right, negative = left
+    int   row     = 0;
+    float life    = 0.0f;   // remaining seconds
+    bool  active  = false;
+};
+
 enum class AppState { Boot, Live, Exit };
 
 static constexpr int kEventCount = 3;
@@ -108,11 +117,15 @@ private:
     // Magical event system
     EventState events_[kEventCount];
 
+    // Shooting star (fired on Enter)
+    ShootingStar shoot_star_;
+
     // Internal methods
     void OnTick(float delta, ftxui::ScreenInteractive& screen);
     void UpdateBoot(float delta);
     void UpdateLive(float delta);
     void PollCwd();
+    void SpawnShootingStar();
 
     ftxui::Element RenderFrame(int total_cols, int total_rows);
     ftxui::Element RenderBoot(int cols, int rows);

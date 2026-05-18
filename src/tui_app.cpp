@@ -98,8 +98,9 @@ static std::string str_truncate(const std::string& s, int max_len) {
 class TerryNode : public ftxui::Node {
 public:
     TerryNode(CellBuffer& buf, ParticleSystem& ps,
+              const ShootingStar* star,
               int cursor_col, int cursor_row, bool cursor_vis)
-        : buf_(buf), ps_(ps),
+        : buf_(buf), ps_(ps), star_(star),
           cursor_col_(cursor_col), cursor_row_(cursor_row),
           cursor_vis_(cursor_vis) {}
 
@@ -178,11 +179,39 @@ public:
         if (cursor_vis_ && cursor_col_ < w && cursor_row_ < h) {
             screen.PixelAt(ox + cursor_col_, oy + cursor_row_).inverted = true;
         }
+
+        // ── Shooting star ───────────────────────────────────────────────
+        if (star_ && star_->active) {
+            int  srow       = star_->row;
+            int  scol       = static_cast<int>(star_->x);
+            bool going_right = star_->speed > 0.0f;
+            // Trail (6 chars behind the head)
+            static constexpr const char* kTrail[] = { "-", "-", ".", ".", ".", "`" };
+            for (int i = 1; i <= 6; ++i) {
+                int tc = going_right ? scol - i : scol + i;
+                if (tc < 0 || tc >= w || srow < 0 || srow >= h) continue;
+                ftxui::Pixel& px = screen.PixelAt(ox + tc, oy + srow);
+                float fade = 1.0f - (i / 7.0f);
+                uint8_t rv = static_cast<uint8_t>(220 * fade);
+                uint8_t gv = static_cast<uint8_t>(200 * fade);
+                uint8_t bv = static_cast<uint8_t>(255 * fade);
+                px.character        = kTrail[i - 1];
+                px.foreground_color = ftxui::Color::RGB(rv, gv, bv);
+            }
+            // Star head
+            if (scol >= 0 && scol < w && srow >= 0 && srow < h) {
+                ftxui::Pixel& px    = screen.PixelAt(ox + scol, oy + srow);
+                px.character        = "*";
+                px.foreground_color = ftxui::Color::RGB(255, 255, 255);
+                px.bold             = true;
+            }
+        }
     }
 
 private:
-    CellBuffer&     buf_;
-    ParticleSystem& ps_;
+    CellBuffer&           buf_;
+    ParticleSystem&       ps_;
+    const ShootingStar*   star_;
     int  cursor_col_, cursor_row_;
     bool cursor_vis_;
 };
@@ -208,6 +237,18 @@ TuiApp::TuiApp(Config cfg)
 
 void TuiApp::PollCwd() {
     cwd_ = get_cwd();
+}
+
+void TuiApp::SpawnShootingStar() {
+    static std::mt19937 rng{12345};
+    std::uniform_int_distribution<int> dir(0, 1);
+    bool go_right = dir(rng) == 1;
+    float speed   = go_right ? 180.0f : -180.0f;
+    shoot_star_.x      = go_right ? -2.0f : static_cast<float>(term_cols_ + 2);
+    shoot_star_.speed  = speed;
+    shoot_star_.row    = std::max(0, buf_.CursorRow());
+    shoot_star_.life   = (term_cols_ + 10) / 180.0f;
+    shoot_star_.active = true;
 }
 
 void TuiApp::UpdateBoot(float delta) {
@@ -309,6 +350,11 @@ void TuiApp::UpdateLive(float delta) {
 
 void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
     anim_time_ += delta;
+    if (shoot_star_.active) {
+        shoot_star_.x    += shoot_star_.speed * delta;
+        shoot_star_.life -= delta;
+        if (shoot_star_.life <= 0.0f) shoot_star_.active = false;
+    }
     particles_.Update(delta, term_cols_, term_rows_);
 
     if (state_ == AppState::Boot)      UpdateBoot(delta);
@@ -321,7 +367,7 @@ void TuiApp::OnTick(float delta, ftxui::ScreenInteractive& screen) {
 
 ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
     return std::make_shared<TerryNode>(
-        buf_, particles_,
+        buf_, particles_, &shoot_star_,
         buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible());
 }
 
@@ -466,7 +512,7 @@ int TuiApp::Run() {
 
         if (state_ == AppState::Live && shell_ && shell_->IsRunning()) {
             if (event.is_character()) { shell_->Write(event.character());  return true; }
-            if (event == Event::Return)     { shell_->Write("\r");      return true; }
+            if (event == Event::Return)     { SpawnShootingStar(); shell_->Write("\r"); return true; }
             if (event == Event::Backspace)  { shell_->Write("\x7f");    return true; }
             if (event == Event::Tab)        { shell_->Write("\t");      return true; }
             if (event == Event::Escape)     { shell_->Write("\x1b");    return true; }
