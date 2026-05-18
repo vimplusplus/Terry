@@ -140,11 +140,16 @@ public:
               const ShootingStar*  star,
               BackgroundSlideshow* slideshow,
               const LuggageRun*    luggage_run,
-              int cursor_col, int cursor_row, bool cursor_vis)
+              int cursor_col, int cursor_row, bool cursor_vis,
+              float anim_time, float crt_flicker,
+              const std::vector<float>*    burn,
+              const std::vector<char32_t>* burn_ch)
         : buf_(buf), ps_(ps), star_(star),
           slideshow_(slideshow), luggage_run_(luggage_run),
           cursor_col_(cursor_col), cursor_row_(cursor_row),
-          cursor_vis_(cursor_vis) {}
+          cursor_vis_(cursor_vis),
+          anim_time_(anim_time), crt_flicker_(crt_flicker),
+          burn_(burn), burn_ch_(burn_ch) {}
 
     void ComputeRequirement() override {
         requirement_.min_x = buf_.Cols();
@@ -157,34 +162,170 @@ public:
         int w  = box_.x_max - box_.x_min + 1;
         int h  = box_.y_max - box_.y_min + 1;
 
-        // ── PTY cell buffer ───────────────────────────────────────────────────
-        for (int row = 0; row < std::min(buf_.Rows(), h); ++row) {
-            for (int col = 0; col < std::min(buf_.Cols(), w); ++col) {
-                const Cell& cell = buf_.At(col, row);
-                ftxui::Pixel& px = screen.PixelAt(ox + col, oy + row);
+        // ── Discworld rune set for digital rain background ────────────────────
+        static constexpr const char* kRunes[] = {
+            "\xe2\x80\xa0",  // †
+            "\xce\xa8",      // Ψ
+            "\xce\xa9",      // Ω
+            "\xce\x94",      // Δ
+            "\xce\x98",      // Θ
+            "\xce\xa6",      // Φ
+            "\xce\x9e",      // Ξ
+            "\xc2\xa7",      // §
+            "\xc2\xb6",      // ¶
+            "\xe2\x88\x9e",  // ∞
+            "\xe2\x89\x88",  // ≈
+            "\xe2\x96\x93",  // ▓
+            "\xe2\x96\x91",  // ░
+            "\xe2\x94\x82",  // │
+            "\xe2\x94\xbc",  // ┼
+            ":", "|", "+", "/", "=", "\\", "0", "1",
+        };
+        static constexpr int kRuneCount = 23;
 
-                // Encode char32_t to UTF-8 for FTXUI
-                char32_t ch = cell.ch;
-                std::string s;
-                if (ch < 0x80u) {
-                    s += static_cast<char>(ch);
-                } else if (ch < 0x800u) {
-                    s += static_cast<char>(0xC0u | (ch >> 6u));
-                    s += static_cast<char>(0x80u | (ch & 0x3Fu));
-                } else if (ch < 0x10000u) {
-                    s += static_cast<char>(0xE0u | (ch >> 12u));
-                    s += static_cast<char>(0x80u | ((ch >> 6u) & 0x3Fu));
-                    s += static_cast<char>(0x80u | (ch & 0x3Fu));
-                } else {
-                    s += static_cast<char>(0xF0u | (ch >> 18u));
-                    s += static_cast<char>(0x80u | ((ch >> 12u) & 0x3Fu));
-                    s += static_cast<char>(0x80u | ((ch >> 6u) & 0x3Fu));
-                    s += static_cast<char>(0x80u | (ch & 0x3Fu));
+        // UTF-8 encoder (reused throughout render)
+        auto encode_utf8 = [](char32_t ch) -> std::string {
+            std::string s;
+            if      (ch < 0x80u)    { s += static_cast<char>(ch); }
+            else if (ch < 0x800u)   { s += static_cast<char>(0xC0u|(ch>>6u)); s += static_cast<char>(0x80u|(ch&0x3Fu)); }
+            else if (ch < 0x10000u) { s += static_cast<char>(0xE0u|(ch>>12u)); s += static_cast<char>(0x80u|((ch>>6u)&0x3Fu)); s += static_cast<char>(0x80u|(ch&0x3Fu)); }
+            else                    { s += static_cast<char>(0xF0u|(ch>>18u)); s += static_cast<char>(0x80u|((ch>>12u)&0x3Fu)); s += static_cast<char>(0x80u|((ch>>6u)&0x3Fu)); s += static_cast<char>(0x80u|(ch&0x3Fu)); }
+            return s;
+        };
+
+        // Stable column hash for rain (no per-frame allocation)
+        auto hf = [](unsigned x) -> float {
+            x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+            x = ((x >> 16u) ^ x) * 0x45d9f3bu;
+            return static_cast<float>(x % 10000u) / 10000.0f;
+        };
+
+        // ── Unified CRT render pass ───────────────────────────────────────────
+        for (int row = 0; row < h; ++row) {
+            // Scanlines: alternate rows at 58% brightness — visible CRT bands
+            float scan = (row % 2 == 0) ? 0.58f : 1.0f;
+            float vy   = static_cast<float>(row * 2 - h) / static_cast<float>(h > 1 ? h : 1);
+
+            for (int col = 0; col < w; ++col) {
+                // Vignette: quadratic darkening toward edges/corners
+                float vx  = static_cast<float>(col * 2 - w) / static_cast<float>(w > 1 ? w : 1);
+                float vig = 1.0f - 0.42f * (vx * vx + vy * vy);
+                if (vig < 0.22f) vig = 0.22f;
+                float crt = scan * vig * crt_flicker_;  // combined CRT multiplier
+
+                ftxui::Pixel& px = screen.PixelAt(ox + col, oy + row);
+                int bc = (col < buf_.Cols()) ? col : buf_.Cols() - 1;
+                int br = (row < buf_.Rows()) ? row : buf_.Rows() - 1;
+
+                // ── PTY content ──────────────────────────────────────────────
+                if (bc >= 0 && br >= 0 && buf_.At(bc, br).ch != U' ') {
+                    const Cell& cell = buf_.At(bc, br);
+                    std::string s = encode_utf8(cell.ch);
+                    px.character = s.empty() ? " " : s;
+                    px.bold      = cell.bold;
+                    if (cell.fg != ftxui::Color{}) px.foreground_color = cell.fg;
+                    if (cell.bg != ftxui::Color{}) px.background_color = cell.bg;
+                    // CRT scanline band: faint purple tint on even rows
+                    if (row % 2 == 0)
+                        px.background_color = ftxui::Color::RGB(4, 0, 7);
+                    continue;
                 }
-                px.character = s.empty() ? " " : s;
-                px.bold      = cell.bold;
-                if (cell.fg != ftxui::Color{}) px.foreground_color = cell.fg;
-                if (cell.bg != ftxui::Color{}) px.background_color = cell.bg;
+
+                // ── Background slideshow art ──────────────────────────────────
+                if (slideshow_) {
+                    float art_bright = 0.0f;
+                    int   art_pidx   = -1;
+                    char  art_ch = slideshow_->char_at(col, row, art_bright, &art_pidx);
+                    if (art_ch != ' ' && art_pidx >= 0) {
+                        const ArtPiece ap = background_art::piece(art_pidx);
+                        float b = art_bright * crt;
+                        float lerp = art_bright;  // 0=dim colour, 1=bright
+                        auto lc = [&](uint8_t d, uint8_t brt) -> uint8_t {
+                            return static_cast<uint8_t>(std::min(255.0f,
+                                (d + static_cast<float>(brt - d) * lerp) * b * 2.8f));
+                        };
+                        px.character        = std::string(1, art_ch);
+                        px.foreground_color = ftxui::Color::RGB(
+                            lc(ap.dim_r, ap.bright_r),
+                            lc(ap.dim_g, ap.bright_g),
+                            lc(ap.dim_b, ap.bright_b));
+                        continue;
+                    }
+                }
+
+                // ── Phosphor burn-in: recently-vacated cells linger ───────────
+                if (burn_ && burn_ch_) {
+                    int bidx = br * buf_.Cols() + bc;
+                    if (bidx >= 0 && bidx < static_cast<int>(burn_->size()) &&
+                        (*burn_)[static_cast<size_t>(bidx)] > 0.03f &&
+                        (*burn_ch_)[static_cast<size_t>(bidx)] != U' ') {
+                        std::string s = encode_utf8((*burn_ch_)[static_cast<size_t>(bidx)]);
+                        if (!s.empty()) {
+                            float bv = (*burn_)[static_cast<size_t>(bidx)] * crt * 0.55f;
+                            // Octarine purple tint (RGB 204,136,255) at burn brightness
+                            px.character        = s;
+                            px.foreground_color = ftxui::Color::RGB(
+                                static_cast<uint8_t>(std::min(255.0f, 204.0f * bv)),
+                                static_cast<uint8_t>(std::min(255.0f, 136.0f * bv)),
+                                static_cast<uint8_t>(std::min(255.0f, 255.0f * bv)));
+                            continue;
+                        }
+                    }
+                }
+
+                // ── Digital rain: Discworld rune columns falling ──────────────
+                {
+                    float col_speed = 3.0f + hf(static_cast<unsigned>(col)) * 9.0f;
+                    float col_phase = hf(static_cast<unsigned>(col) * 31u + 7u)
+                                      * static_cast<float>(h > 0 ? h : 1);
+                    float head_y    = std::fmod(anim_time_ * col_speed + col_phase,
+                                               static_cast<float>(h > 0 ? h : 1));
+                    float dist      = head_y - static_cast<float>(row);
+                    if (dist < 0.0f) dist += static_cast<float>(h);
+
+                    int ri = static_cast<int>(anim_time_ * 2.5f +
+                                             static_cast<float>(col * 7 + row * 13));
+                    ri = ((ri % kRuneCount) + kRuneCount) % kRuneCount;
+
+                    uint8_t rr = 0, rg = 0, rb = 0;
+                    bool visible = true;
+
+                    if (dist < 1.5f) {
+                        // Head — bright octarine-green (matches border neon)
+                        float b = 0.88f * crt;
+                        rr = static_cast<uint8_t>(std::min(255.0f, 200.0f * b));
+                        rg = static_cast<uint8_t>(std::min(255.0f, 255.0f * b));
+                        rb = static_cast<uint8_t>(std::min(255.0f, 200.0f * b));
+                        px.bold = true;
+                    } else if (dist < 15.0f) {
+                        // Trail — octarine purple fading (RGB 204,136,255)
+                        float fade = 1.0f - (dist - 1.5f) / 13.5f;
+                        float b    = fade * 0.72f * crt;
+                        rr = static_cast<uint8_t>(std::min(255.0f, 204.0f * b));
+                        rg = static_cast<uint8_t>(std::min(255.0f, 136.0f * b));
+                        rb = static_cast<uint8_t>(std::min(255.0f, 255.0f * b));
+                    } else {
+                        // Far static — sparse dim texture (not every cell)
+                        unsigned noise = (static_cast<unsigned>(col) * 1301u +
+                                         static_cast<unsigned>(row) * 4999u +
+                                         static_cast<unsigned>(anim_time_ * 0.7f) * 97u)
+                                        * 2654435761u;
+                        float nf = static_cast<float>(noise % 1000u) / 1000.0f;
+                        if (nf > 0.72f) {
+                            float b = (0.05f + nf * 0.06f) * crt;
+                            rr = static_cast<uint8_t>(std::min(255.0f, 74.0f * b * 3.8f));
+                            rg = static_cast<uint8_t>(std::min(255.0f, 48.0f * b * 3.8f));
+                            rb = static_cast<uint8_t>(std::min(255.0f, 96.0f * b * 3.8f));
+                        } else {
+                            visible = false;
+                        }
+                    }
+
+                    if (visible) {
+                        px.character        = kRunes[ri];
+                        px.foreground_color = ftxui::Color::RGB(rr, rg, rb);
+                    }
+                }
             }
         }
 
@@ -288,6 +429,10 @@ private:
     const LuggageRun*     luggage_run_;
     int  cursor_col_, cursor_row_;
     bool cursor_vis_;
+    float anim_time_;
+    float crt_flicker_;
+    const std::vector<float>*    burn_;
+    const std::vector<char32_t>* burn_ch_;
 };
 
 
@@ -301,6 +446,9 @@ TuiApp::TuiApp(Config cfg)
     particles_.Init(term_cols_, term_rows_, 15);
     slideshow_.set_terminal_size(term_cols_, term_rows_);
     quote_x_ = static_cast<float>(term_cols_);
+    crt_burn_.assign(static_cast<size_t>(term_cols_ * term_rows_), 0.0f);
+    crt_burn_ch_.assign(static_cast<size_t>(term_cols_ * term_rows_), U' ');
+    crt_flicker_timer_ = 8.0f;  // first flicker check after 8 s
     last_tick_ = Clock::now();
     // Stagger initial event cooldowns so they don’t all fire at once
     static std::mt19937 erng{7777};
@@ -395,6 +543,48 @@ void TuiApp::UpdateLive(float delta) {
 
     // ── Background slideshow + Luggage run ───────────────────────────────────
     slideshow_.tick(delta);
+
+    // ── CRT flicker ───────────────────────────────────────────────────────────
+    {
+        static std::mt19937 frng{9876};
+        crt_flicker_timer_ -= delta;
+        if (crt_flicker_timer_ <= 0.0f) {
+            if (crt_flicker_ < 1.0f) {
+                // End dim period — restore, schedule next check
+                crt_flicker_ = 1.0f;
+                std::uniform_real_distribution<float> wait(5.0f, 18.0f);
+                crt_flicker_timer_ = wait(frng);
+            } else {
+                // Start a flicker: brief screen dim
+                std::uniform_real_distribution<float> dim(0.62f, 0.87f);
+                std::uniform_real_distribution<float> dur(0.04f, 0.14f);
+                crt_flicker_      = dim(frng);
+                crt_flicker_timer_ = dur(frng);
+            }
+        }
+    }
+
+    // ── Phosphor burn-in decay ────────────────────────────────────────────────
+    {
+        int ncells = buf_.Cols() * buf_.Rows();
+        if (static_cast<int>(crt_burn_.size()) == ncells) {
+            static constexpr float kBurnDecay = 0.55f;  // full fade in ~0.55 s
+            for (int r = 0; r < buf_.Rows(); ++r) {
+                for (int c = 0; c < buf_.Cols(); ++c) {
+                    int idx = r * buf_.Cols() + c;
+                    const Cell& cell = buf_.At(c, r);
+                    if (cell.ch != U' ') {
+                        crt_burn_[static_cast<size_t>(idx)] = 1.0f;
+                        crt_burn_ch_[static_cast<size_t>(idx)] = cell.ch;
+                    } else {
+                        crt_burn_[static_cast<size_t>(idx)] -= delta / kBurnDecay;
+                        if (crt_burn_[static_cast<size_t>(idx)] < 0.0f)
+                            crt_burn_[static_cast<size_t>(idx)] = 0.0f;
+                    }
+                }
+            }
+        }
+    }
     if (luggage_run_.active) {
         luggage_run_.x        += luggage_run_.speed * delta;
         luggage_run_.leg_anim += delta;
@@ -479,7 +669,9 @@ ftxui::Element TuiApp::RenderTerminalArea(int /*cols*/, int /*rows*/) {
     return std::make_shared<TerryNode>(
         buf_, particles_, &shoot_star_,
         &slideshow_, &luggage_run_,
-        buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible());
+        buf_.CursorCol(), buf_.CursorRow(), buf_.CursorVisible(),
+        anim_time_, crt_flicker_,
+        &crt_burn_, &crt_burn_ch_);
 }
 
 ftxui::Element TuiApp::RenderBoot(int /*cols*/, int /*rows*/) {
@@ -532,6 +724,8 @@ ftxui::Element TuiApp::RenderFrame(int total_cols, int total_rows) {
         buf_.Resize(term_cols_, term_rows_);
         particles_.Init(term_cols_, term_rows_, particles_.base_count);
         slideshow_.set_terminal_size(term_cols_, term_rows_);
+        crt_burn_.assign(static_cast<size_t>(term_cols_ * term_rows_), 0.0f);
+        crt_burn_ch_.assign(static_cast<size_t>(term_cols_ * term_rows_), U' ');
         if (shell_ && shell_->IsRunning())
             shell_->Resize(term_cols_, term_rows_);
     }

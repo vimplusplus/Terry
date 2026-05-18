@@ -138,6 +138,12 @@ private:
     // Luggage run (fired on LUGGAGE_RAMPAGE event)
     LuggageRun luggage_run_;
 
+    // CRT effects
+    float crt_flicker_       = 1.0f;  // global brightness multiplier (dips during flicker)
+    float crt_flicker_timer_ = 0.0f;  // countdown: dim period OR wait until next flicker
+    std::vector<float>    crt_burn_;    // phosphor burn-in brightness per cell [row*cols+col]
+    std::vector<char32_t> crt_burn_ch_; // character at each burn-in cell
+
     // typed_line_ — shadow buffer tracking what the user is typing for command interception
     std::string typed_line_;
 
